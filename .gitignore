@@ -1,0 +1,14 @@
+node_modules/
+runtime/
+dist/
+.build/
+output/
+.playwright-cli/
+.DS_Store
+.env
+.env.local
+.env.*.local
+task_plan.md
+findings.md
+progress.md
+*.log

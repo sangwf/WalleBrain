@@ -1,0 +1,502 @@
+:root {
+  font-family: "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  color: #18211a;
+  background:
+    radial-gradient(circle at top left, rgba(211, 169, 96, 0.26), transparent 36%),
+    radial-gradient(circle at top right, rgba(87, 129, 111, 0.18), transparent 28%),
+    linear-gradient(180deg, #f6f0e4 0%, #efe6d5 45%, #eadfcd 100%);
+  line-height: 1.45;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+}
+
+button {
+  font: inherit;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.bridge-banner {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 18px;
+  background: rgba(24, 33, 26, 0.76);
+  color: #f5eddc;
+  backdrop-filter: blur(18px);
+}
+
+.bridge-pill {
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bridge-pill.live {
+  background: rgba(113, 187, 141, 0.22);
+  color: #ddf5df;
+}
+
+.bridge-pill.demo {
+  background: rgba(214, 163, 94, 0.24);
+  color: #ffeec8;
+}
+
+.bridge-copy {
+  font-size: 0.92rem;
+  color: #f4ead6;
+  word-break: break-word;
+}
+
+.bridge-actions {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.bridge-device-picker,
+.device-picker {
+  display: grid;
+  gap: 8px;
+}
+
+.bridge-device-picker span,
+.device-picker span {
+  font-size: 0.78rem;
+  color: inherit;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.bridge-device-picker select,
+.device-picker select {
+  min-width: 220px;
+  border: 1px solid rgba(245, 237, 220, 0.2);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(244, 237, 220, 0.1);
+  color: inherit;
+}
+
+.device-picker select {
+  min-width: 100%;
+  border-color: rgba(49, 65, 57, 0.14);
+  background: rgba(34, 49, 39, 0.04);
+  color: #223127;
+}
+
+.bridge-action-button {
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 14px;
+  background: rgba(244, 237, 220, 0.12);
+  color: #faf3df;
+}
+
+.bridge-action-button.accent {
+  background: rgba(207, 132, 52, 0.88);
+}
+
+.bridge-action-button:disabled,
+.quick-actions button:disabled {
+  opacity: 0.6;
+}
+
+.meeting-shell {
+  min-height: 100vh;
+  padding: 32px;
+}
+
+.session-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+  padding: 24px 28px;
+  border: 1px solid rgba(57, 76, 55, 0.14);
+  border-radius: 28px;
+  background: rgba(252, 249, 242, 0.74);
+  box-shadow: 0 20px 70px rgba(78, 63, 37, 0.12);
+  backdrop-filter: blur(20px);
+}
+
+.session-header h1,
+.panel h2,
+.session-sidebar h3 {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Songti SC", serif;
+  font-weight: 600;
+}
+
+.session-header h1 {
+  font-size: clamp(2rem, 3vw, 3.4rem);
+  letter-spacing: -0.04em;
+}
+
+.session-subtitle,
+.eyebrow,
+.reference-badge,
+.timer-label {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.session-subtitle {
+  margin: 8px 0 0;
+  color: #5d685d;
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  font-size: 0.72rem;
+  color: #7a6b52;
+}
+
+.session-header-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  align-items: flex-end;
+}
+
+.timer-card {
+  min-width: 148px;
+  padding: 16px 20px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, #21372d 0%, #18251e 100%);
+  color: #f5f1e5;
+  display: grid;
+  gap: 6px;
+}
+
+.timer-card strong {
+  font-size: 1.7rem;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+}
+
+.pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.pill {
+  border-radius: 999px;
+  padding: 9px 14px;
+  background: rgba(31, 50, 40, 0.08);
+  color: #213228;
+  font-size: 0.82rem;
+}
+
+.pill.mode-important {
+  background: rgba(130, 77, 37, 0.13);
+  color: #7d3b16;
+}
+
+.pill.mode-normal {
+  background: rgba(55, 92, 84, 0.14);
+  color: #1d5d4d;
+}
+
+.pill.status-exported,
+.pill.active {
+  background: rgba(61, 113, 84, 0.16);
+  color: #27583d;
+}
+
+.pill.status-recording {
+  background: rgba(156, 83, 40, 0.16);
+  color: #8d4615;
+}
+
+.pill.status-failed,
+.status-row.failed {
+  background: rgba(165, 46, 46, 0.12);
+  color: #8f2929;
+}
+
+.pill.muted {
+  background: rgba(67, 74, 70, 0.08);
+  color: #66706a;
+}
+
+.shell-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.9fr);
+  gap: 24px;
+  margin-top: 24px;
+}
+
+.document-surface,
+.session-sidebar {
+  display: grid;
+  gap: 20px;
+}
+
+.panel,
+.sidebar-card {
+  border: 1px solid rgba(57, 76, 55, 0.12);
+  border-radius: 24px;
+  background: rgba(252, 249, 242, 0.78);
+  box-shadow: 0 15px 40px rgba(82, 64, 35, 0.08);
+}
+
+.panel {
+  padding: 22px 24px;
+}
+
+.sidebar-card {
+  padding: 20px;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.reference-badge {
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: rgba(151, 127, 84, 0.12);
+  color: #806445;
+  font-size: 0.74rem;
+}
+
+.transcript-panel-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.transcript-focus-button {
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(41, 59, 49, 0.08);
+  color: #213228;
+}
+
+.transcript-helper {
+  margin: 0 0 14px;
+  color: #5d665a;
+}
+
+.transcript-helper kbd {
+  border: 1px solid rgba(57, 76, 55, 0.18);
+  border-radius: 8px;
+  padding: 2px 8px;
+  background: rgba(252, 249, 242, 0.92);
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.92rem;
+}
+
+.transcript-editor {
+  width: 100%;
+  min-height: 260px;
+  resize: vertical;
+  border: 1px solid rgba(57, 76, 55, 0.14);
+  border-radius: 20px;
+  padding: 18px 20px;
+  background: rgba(253, 251, 245, 0.9);
+  color: #2d3d32;
+  font: inherit;
+  line-height: 1.7;
+}
+
+.transcript-editor:focus {
+  outline: 2px solid rgba(117, 85, 38, 0.28);
+  outline-offset: 2px;
+}
+
+.transcript-editor[readonly] {
+  background: rgba(95, 104, 99, 0.06);
+  color: #5a655d;
+}
+
+.transcript-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  color: #667166;
+  font-size: 0.88rem;
+}
+
+.transcript-stream {
+  display: grid;
+  gap: 12px;
+}
+
+.transcript-line {
+  margin: 0;
+  padding: 14px 16px;
+  border-left: 3px solid rgba(86, 119, 105, 0.45);
+  border-radius: 16px;
+  background: rgba(82, 108, 95, 0.07);
+  color: #3f5144;
+  font-size: 1.02rem;
+}
+
+.bullet-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 10px;
+}
+
+.bullet-list li::marker {
+  color: #7c5732;
+}
+
+.empty-copy,
+.summary-copy {
+  margin: 0;
+  color: #4b5b52;
+}
+
+.panel-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.final-summary-panel {
+  background:
+    linear-gradient(180deg, rgba(241, 232, 214, 0.82) 0%, rgba(250, 245, 236, 0.8) 100%);
+}
+
+.meta-list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+}
+
+.meta-list div {
+  display: grid;
+  gap: 4px;
+}
+
+.meta-list dt {
+  color: #766d5c;
+  font-size: 0.82rem;
+}
+
+.meta-list dd {
+  margin: 0;
+  color: #223127;
+  word-break: break-word;
+}
+
+.status-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(63, 72, 68, 0.07);
+}
+
+.status-row.done {
+  background: rgba(64, 112, 86, 0.14);
+  color: #285840;
+}
+
+.status-row.running {
+  background: rgba(154, 117, 52, 0.16);
+  color: #825d1d;
+}
+
+.status-row.pending {
+  color: #667166;
+}
+
+.quick-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.quick-actions button {
+  border: 0;
+  border-radius: 16px;
+  padding: 13px 14px;
+  background: rgba(47, 59, 50, 0.08);
+  color: #203126;
+}
+
+.quick-actions .primary {
+  background: linear-gradient(180deg, #ae6a2f 0%, #8c4d1d 100%);
+  color: #fdf7ef;
+}
+
+@media (max-width: 960px) {
+  .bridge-banner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .bridge-device-picker select {
+    min-width: 100%;
+  }
+
+  .bridge-actions {
+    margin-left: 0;
+  }
+
+  .meeting-shell {
+    padding: 18px;
+  }
+
+  .session-header,
+  .panel-split,
+  .shell-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .session-header {
+    padding: 20px;
+  }
+
+  .session-header-actions {
+    align-items: stretch;
+  }
+
+  .pill-row {
+    justify-content: flex-start;
+  }
+}

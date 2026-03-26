@@ -1,0 +1,37 @@
+{
+  "name": "wallebrain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "create-session": "tsx src/bin/create-session.ts",
+    "run-harness": "tsx src/bin/run-harness.ts",
+    "eval-dataset": "tsx src/bin/eval-dataset.ts",
+    "acceptance-check": "tsx src/bin/acceptance-check.ts",
+    "native:build": "swift build",
+    "native:app": "swift run WalleBrainApp",
+    "native:bundle": "./scripts/build_native_bundle.sh WalleBrainApp WalleBrain com.wallebrain.app",
+    "native:bundle-smoke": "./scripts/build_native_bundle.sh WalleBrainRealMeetingSmoke WalleBrainSmoke com.wallebrain.smoke",
+    "native:open": "./scripts/build_native_bundle.sh WalleBrainApp WalleBrain com.wallebrain.app >/tmp/wallebrain_bundle_path && open \"$(cat /tmp/wallebrain_bundle_path)\"",
+    "native:acceptance": "swift run WalleBrainAcceptance",
+    "prepare-magicdata-subset": "tsx src/bin/prepare-magicdata-subset.ts",
+    "hotkey-agent": "./scripts/run_hotkey_agent.sh",
+    "sync-demo-session": "tsx src/bin/sync-demo-session.ts",
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5"
+  }
+}
