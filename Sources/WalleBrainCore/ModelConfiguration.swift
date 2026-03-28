@@ -8,7 +8,7 @@ public struct ModelConfiguration: Codable, Sendable, Hashable {
   public init(
     baseURLReference: String = "$DEERAPI_BASE_URL",
     apiKeyReference: String = "$DEERAPI_KEY",
-    modelsReference: String = "gemini-3-flash-preview"
+    modelsReference: String = "gemini-3.1-pro-preview"
   ) {
     self.baseURLReference = baseURLReference
     self.apiKeyReference = apiKeyReference
