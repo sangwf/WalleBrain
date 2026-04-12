@@ -41,6 +41,313 @@ public struct CompiledLanguageAssets: Sendable, Hashable {
   public let vocabularyURL: URL
 }
 
+public enum MeetingBlockKind: String, Codable, Sendable, Hashable, CaseIterable {
+  case executiveSummary
+  case organizedTranscript
+  case keyPoint
+  case actionItem
+  case decision
+  case risk
+  case openQuestion
+  case participantPosition
+  case projectLink
+  case transcriptSelection
+}
+
+public struct MeetingBlockAnchor: Codable, Sendable, Hashable {
+  public let kind: MeetingBlockKind
+  public let blockID: String?
+  public let transcriptQuote: String?
+  public let chunkIDs: [String]
+
+  public init(
+    kind: MeetingBlockKind,
+    blockID: String? = nil,
+    transcriptQuote: String? = nil,
+    chunkIDs: [String] = []
+  ) {
+    self.kind = kind
+    self.blockID = blockID
+    self.transcriptQuote = transcriptQuote
+    self.chunkIDs = chunkIDs
+  }
+}
+
+public enum ReviewFeedbackType: String, Codable, Sendable, Hashable, CaseIterable {
+  case factualError
+  case omission
+  case emphasis
+  case attribution
+  case style
+  case invalidActionItem
+  case promoteToDecision
+  case projectLink
+  case personLink
+  case custom
+}
+
+public enum ReviewCommentStatus: String, Codable, Sendable, Hashable, CaseIterable {
+  case pending
+  case applied
+  case rejected
+}
+
+public struct ReviewComment: Identifiable, Codable, Sendable, Hashable {
+  public let id: UUID
+  public let createdAt: Date
+  public var anchor: MeetingBlockAnchor
+  public var type: ReviewFeedbackType
+  public var comment: String
+  public var proposedText: String?
+  public var targetProjectID: String?
+  public var targetPersonID: String?
+  public var status: ReviewCommentStatus
+
+  public init(
+    id: UUID = UUID(),
+    createdAt: Date = Date(),
+    anchor: MeetingBlockAnchor,
+    type: ReviewFeedbackType,
+    comment: String,
+    proposedText: String? = nil,
+    targetProjectID: String? = nil,
+    targetPersonID: String? = nil,
+    status: ReviewCommentStatus = .pending
+  ) {
+    self.id = id
+    self.createdAt = createdAt
+    self.anchor = anchor
+    self.type = type
+    self.comment = comment
+    self.proposedText = proposedText
+    self.targetProjectID = targetProjectID
+    self.targetPersonID = targetPersonID
+    self.status = status
+  }
+}
+
+public enum RevisionScope: String, Codable, Sendable, Hashable, CaseIterable {
+  case block
+  case note
+  case projectMemory
+}
+
+public enum RevisionRequestStatus: String, Codable, Sendable, Hashable, CaseIterable {
+  case pending
+  case applied
+  case rejected
+}
+
+public struct RevisionRequest: Identifiable, Codable, Sendable, Hashable {
+  public let id: UUID
+  public let createdAt: Date
+  public var scope: RevisionScope
+  public var anchor: MeetingBlockAnchor?
+  public var instructions: String
+  public var reviewCommentIDs: [UUID]
+  public var status: RevisionRequestStatus
+
+  public init(
+    id: UUID = UUID(),
+    createdAt: Date = Date(),
+    scope: RevisionScope,
+    anchor: MeetingBlockAnchor? = nil,
+    instructions: String,
+    reviewCommentIDs: [UUID] = [],
+    status: RevisionRequestStatus = .pending
+  ) {
+    self.id = id
+    self.createdAt = createdAt
+    self.scope = scope
+    self.anchor = anchor
+    self.instructions = instructions
+    self.reviewCommentIDs = reviewCommentIDs
+    self.status = status
+  }
+}
+
+public struct ProjectReference: Identifiable, Codable, Sendable, Hashable {
+  public let id: String
+  public var title: String
+  public var aliases: [String]
+
+  public init(id: String, title: String, aliases: [String] = []) {
+    self.id = id
+    self.title = title
+    self.aliases = aliases
+  }
+}
+
+public enum ProjectLinkRole: String, Codable, Sendable, Hashable, CaseIterable {
+  case primary
+  case secondary
+  case mentioned
+}
+
+public enum ProjectLinkStatus: String, Codable, Sendable, Hashable, CaseIterable {
+  case unresolved
+  case confirmed
+  case rejected
+}
+
+public struct MeetingProjectLink: Identifiable, Codable, Sendable, Hashable {
+  public let id: UUID
+  public var project: ProjectReference
+  public var role: ProjectLinkRole
+  public var status: ProjectLinkStatus
+  public var confidence: Double
+  public var evidence: String?
+
+  public init(
+    id: UUID = UUID(),
+    project: ProjectReference,
+    role: ProjectLinkRole = .mentioned,
+    status: ProjectLinkStatus = .unresolved,
+    confidence: Double = 0.5,
+    evidence: String? = nil
+  ) {
+    self.id = id
+    self.project = project
+    self.role = role
+    self.status = status
+    self.confidence = confidence
+    self.evidence = evidence
+  }
+}
+
+public struct PersonReference: Identifiable, Codable, Sendable, Hashable {
+  public let id: String
+  public var displayName: String
+  public var aliases: [String]
+
+  public init(id: String, displayName: String, aliases: [String] = []) {
+    self.id = id
+    self.displayName = displayName
+    self.aliases = aliases
+  }
+}
+
+public struct ParticipantPosition: Identifiable, Codable, Sendable, Hashable {
+  public let id: UUID
+  public var person: PersonReference?
+  public var label: String
+  public var stance: String
+  public var confidence: Double
+  public var evidence: String?
+
+  public init(
+    id: UUID = UUID(),
+    person: PersonReference? = nil,
+    label: String,
+    stance: String,
+    confidence: Double = 0.5,
+    evidence: String? = nil
+  ) {
+    self.id = id
+    self.person = person
+    self.label = label
+    self.stance = stance
+    self.confidence = confidence
+    self.evidence = evidence
+  }
+}
+
+public enum DecisionStatus: String, Codable, Sendable, Hashable, CaseIterable {
+  case candidate
+  case confirmed
+}
+
+public struct MeetingDecision: Identifiable, Codable, Sendable, Hashable {
+  public let id: UUID
+  public var text: String
+  public var status: DecisionStatus
+  public var confidence: Double
+  public var relatedProjectID: String?
+  public var evidence: String?
+
+  public init(
+    id: UUID = UUID(),
+    text: String,
+    status: DecisionStatus = .candidate,
+    confidence: Double = 0.5,
+    relatedProjectID: String? = nil,
+    evidence: String? = nil
+  ) {
+    self.id = id
+    self.text = text
+    self.status = status
+    self.confidence = confidence
+    self.relatedProjectID = relatedProjectID
+    self.evidence = evidence
+  }
+}
+
+public struct MeetingRisk: Identifiable, Codable, Sendable, Hashable {
+  public let id: UUID
+  public var text: String
+  public var confidence: Double
+  public var relatedProjectID: String?
+  public var evidence: String?
+
+  public init(
+    id: UUID = UUID(),
+    text: String,
+    confidence: Double = 0.5,
+    relatedProjectID: String? = nil,
+    evidence: String? = nil
+  ) {
+    self.id = id
+    self.text = text
+    self.confidence = confidence
+    self.relatedProjectID = relatedProjectID
+    self.evidence = evidence
+  }
+}
+
+public enum OpenLoopType: String, Codable, Sendable, Hashable, CaseIterable {
+  case actionItem
+  case openQuestion
+  case followUp
+  case risk
+}
+
+public enum OpenLoopStatus: String, Codable, Sendable, Hashable, CaseIterable {
+  case open
+  case closed
+  case dropped
+}
+
+public struct MeetingOpenLoop: Identifiable, Codable, Sendable, Hashable {
+  public let id: UUID
+  public var type: OpenLoopType
+  public var text: String
+  public var owner: String?
+  public var dueHint: String?
+  public var status: OpenLoopStatus
+  public var relatedProjectID: String?
+  public var evidence: String?
+
+  public init(
+    id: UUID = UUID(),
+    type: OpenLoopType,
+    text: String,
+    owner: String? = nil,
+    dueHint: String? = nil,
+    status: OpenLoopStatus = .open,
+    relatedProjectID: String? = nil,
+    evidence: String? = nil
+  ) {
+    self.id = id
+    self.type = type
+    self.text = text
+    self.owner = owner
+    self.dueHint = dueHint
+    self.status = status
+    self.relatedProjectID = relatedProjectID
+    self.evidence = evidence
+  }
+}
+
 public struct DeerAPIResult: Sendable, Hashable {
   public let provider: String
   public let model: String
@@ -48,6 +355,52 @@ public struct DeerAPIResult: Sendable, Hashable {
   public let organizedTranscript: String
   public let keyPoints: [String]
   public let actionItems: [String]
+  public let decisions: [MeetingDecision]
+  public let openLoops: [MeetingOpenLoop]
+  public let risks: [MeetingRisk]
+  public let participantPositions: [ParticipantPosition]
+  public let projectLinks: [MeetingProjectLink]
+  public let relatedPeople: [PersonReference]
+
+  public init(
+    provider: String,
+    model: String,
+    summary: String,
+    organizedTranscript: String,
+    keyPoints: [String],
+    actionItems: [String],
+    decisions: [MeetingDecision] = [],
+    openLoops: [MeetingOpenLoop] = [],
+    risks: [MeetingRisk] = [],
+    participantPositions: [ParticipantPosition] = [],
+    projectLinks: [MeetingProjectLink] = [],
+    relatedPeople: [PersonReference] = []
+  ) {
+    self.provider = provider
+    self.model = model
+    self.summary = summary
+    self.organizedTranscript = organizedTranscript
+    self.keyPoints = keyPoints
+    self.actionItems = actionItems
+    self.decisions = decisions
+    self.openLoops = openLoops
+    self.risks = risks
+    self.participantPositions = participantPositions
+    self.projectLinks = projectLinks
+    self.relatedPeople = relatedPeople
+  }
+}
+
+public struct SummaryRevisionResult: Sendable, Hashable {
+  public let provider: String
+  public let model: String
+  public let summary: String
+
+  public init(provider: String, model: String, summary: String) {
+    self.provider = provider
+    self.model = model
+    self.summary = summary
+  }
 }
 
 public enum MeetingMode: String, Codable, Sendable, Hashable, CaseIterable {
@@ -88,6 +441,45 @@ public struct AudioInputDevice: Identifiable, Codable, Sendable, Hashable {
   }
 }
 
+public struct TranscriptCorrection: Identifiable, Codable, Sendable, Hashable {
+  public let id: UUID
+  public var wrong: String
+  public var correct: String
+  public var type: String?
+
+  public init(id: UUID = UUID(), wrong: String, correct: String, type: String? = nil) {
+    self.id = id
+    self.wrong = wrong
+    self.correct = correct
+    self.type = type
+  }
+}
+
+public struct CorrectionMemoryEntry: Identifiable, Codable, Sendable, Hashable {
+  public let id: UUID
+  public var wrong: String
+  public var correct: String
+  public var type: String?
+  public var count: Int
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    wrong: String,
+    correct: String,
+    type: String? = nil,
+    count: Int = 1,
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.wrong = wrong
+    self.correct = correct
+    self.type = type
+    self.count = count
+    self.updatedAt = updatedAt
+  }
+}
+
 public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
   public let id: UUID
   public var title: String
@@ -104,11 +496,21 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
   public var provider: String?
   public var model: String?
   public var liveTranscript: String
+  public var correctedTranscript: String?
   public var transcriptChunks: [TranscriptChunk]
+  public var sessionCorrections: [TranscriptCorrection]?
   public var summary: String?
   public var organizedTranscript: String?
   public var keyPoints: [String]
   public var actionItems: [String]
+  public var decisions: [MeetingDecision]?
+  public var openLoops: [MeetingOpenLoop]?
+  public var risks: [MeetingRisk]?
+  public var participantPositions: [ParticipantPosition]?
+  public var projectLinks: [MeetingProjectLink]?
+  public var relatedPeople: [PersonReference]?
+  public var reviewComments: [ReviewComment]?
+  public var revisionRequests: [RevisionRequest]?
   public var errorMessage: String?
 
   public init(
@@ -127,11 +529,21 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
     provider: String? = nil,
     model: String? = nil,
     liveTranscript: String = "",
+    correctedTranscript: String? = nil,
     transcriptChunks: [TranscriptChunk] = [],
+    sessionCorrections: [TranscriptCorrection]? = nil,
     summary: String? = nil,
     organizedTranscript: String? = nil,
     keyPoints: [String] = [],
     actionItems: [String] = [],
+    decisions: [MeetingDecision]? = nil,
+    openLoops: [MeetingOpenLoop]? = nil,
+    risks: [MeetingRisk]? = nil,
+    participantPositions: [ParticipantPosition]? = nil,
+    projectLinks: [MeetingProjectLink]? = nil,
+    relatedPeople: [PersonReference]? = nil,
+    reviewComments: [ReviewComment]? = nil,
+    revisionRequests: [RevisionRequest]? = nil,
     errorMessage: String? = nil
   ) {
     self.id = id
@@ -149,11 +561,21 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
     self.provider = provider
     self.model = model
     self.liveTranscript = liveTranscript
+    self.correctedTranscript = correctedTranscript
     self.transcriptChunks = transcriptChunks
+    self.sessionCorrections = sessionCorrections
     self.summary = summary
     self.organizedTranscript = organizedTranscript
     self.keyPoints = keyPoints
     self.actionItems = actionItems
+    self.decisions = decisions
+    self.openLoops = openLoops
+    self.risks = risks
+    self.participantPositions = participantPositions
+    self.projectLinks = projectLinks
+    self.relatedPeople = relatedPeople
+    self.reviewComments = reviewComments
+    self.revisionRequests = revisionRequests
     self.errorMessage = errorMessage
   }
 }
@@ -168,10 +590,58 @@ public struct NativeMeetingNote: Sendable, Hashable {
   public let organizedTranscript: String
   public let keyPoints: [String]
   public let actionItems: [String]
+  public let decisions: [MeetingDecision]
+  public let openLoops: [MeetingOpenLoop]
+  public let risks: [MeetingRisk]
+  public let participantPositions: [ParticipantPosition]
+  public let projectLinks: [MeetingProjectLink]
+  public let relatedPeople: [PersonReference]
   public let dictionaryPath: String
   public let audioFilePath: String
   public let provider: String
   public let model: String
+
+  public init(
+    title: String,
+    startedAt: Date,
+    endedAt: Date?,
+    transcript: String,
+    liveTranscript: String,
+    summary: String,
+    organizedTranscript: String,
+    keyPoints: [String],
+    actionItems: [String],
+    decisions: [MeetingDecision] = [],
+    openLoops: [MeetingOpenLoop] = [],
+    risks: [MeetingRisk] = [],
+    participantPositions: [ParticipantPosition] = [],
+    projectLinks: [MeetingProjectLink] = [],
+    relatedPeople: [PersonReference] = [],
+    dictionaryPath: String,
+    audioFilePath: String,
+    provider: String,
+    model: String
+  ) {
+    self.title = title
+    self.startedAt = startedAt
+    self.endedAt = endedAt
+    self.transcript = transcript
+    self.liveTranscript = liveTranscript
+    self.summary = summary
+    self.organizedTranscript = organizedTranscript
+    self.keyPoints = keyPoints
+    self.actionItems = actionItems
+    self.decisions = decisions
+    self.openLoops = openLoops
+    self.risks = risks
+    self.participantPositions = participantPositions
+    self.projectLinks = projectLinks
+    self.relatedPeople = relatedPeople
+    self.dictionaryPath = dictionaryPath
+    self.audioFilePath = audioFilePath
+    self.provider = provider
+    self.model = model
+  }
 }
 
 public struct FixtureHarnessResult: Sendable, Hashable {

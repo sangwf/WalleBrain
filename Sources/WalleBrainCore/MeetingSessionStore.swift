@@ -24,6 +24,11 @@ public actor MeetingSessionStore {
     try paths.ensureDirectories()
 
     let fileStem = Self.fileStem(for: title, startedAt: startedAt)
+    let audioFilePath = if let selectedInput, AudioInputCatalog.isManualInput(id: selectedInput.id) {
+      ""
+    } else {
+      paths.audioRecordingURL(fileStem: fileStem).path(percentEncoded: false)
+    }
     let session = NativeMeetingSession(
       title: title,
       mode: mode,
@@ -31,7 +36,7 @@ public actor MeetingSessionStore {
       startedAt: startedAt,
       selectedInput: selectedInput,
       dictionaryPath: dictionaryPath,
-      audioFilePath: paths.audioRecordingURL(fileStem: fileStem).path(percentEncoded: false),
+      audioFilePath: audioFilePath,
       sessionJSONPath: paths.sessionJSONURL(fileStem: fileStem).path(percentEncoded: false),
       sessionMarkdownPath: paths.sessionMarkdownURL(fileStem: fileStem).path(percentEncoded: false)
     )
@@ -102,11 +107,59 @@ public actor MeetingSessionStore {
     let iso = ISO8601DateFormatter()
     let ended = session.endedAt.map { iso.string(from: $0) } ?? ""
     let transcript = session.liveTranscript.isEmpty ? "_No transcript yet._" : session.liveTranscript
+    let correctedTranscript = session.correctedTranscript?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+      ? session.correctedTranscript!
+      : "_Pending_"
     let organizedTranscript = session.organizedTranscript?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
       ? session.organizedTranscript!
       : "_Pending_"
     let keyPoints = session.keyPoints.isEmpty ? "- None" : session.keyPoints.map { "- \($0)" }.joined(separator: "\n")
     let actionItems = session.actionItems.isEmpty ? "- None" : session.actionItems.map { "- \($0)" }.joined(separator: "\n")
+    let decisions = (session.decisions ?? []).isEmpty
+      ? "- None"
+      : (session.decisions ?? []).map {
+        let project = $0.relatedProjectID.map { " [project: \($0)]" } ?? ""
+        return "- \($0.text) [\($0.status.rawValue)]\(project)"
+      }.joined(separator: "\n")
+    let openLoops = (session.openLoops ?? []).isEmpty
+      ? "- None"
+      : (session.openLoops ?? []).map {
+        let owner = $0.owner.map { " owner=\($0)" } ?? ""
+        let dueHint = $0.dueHint.map { " due=\($0)" } ?? ""
+        return "- [\($0.type.rawValue)] \($0.text)\(owner)\(dueHint)"
+      }.joined(separator: "\n")
+    let risks = (session.risks ?? []).isEmpty
+      ? "- None"
+      : (session.risks ?? []).map {
+        let project = $0.relatedProjectID.map { " [project: \($0)]" } ?? ""
+        return "- \($0.text)\(project)"
+      }.joined(separator: "\n")
+    let projectLinks = (session.projectLinks ?? []).isEmpty
+      ? "- None"
+      : (session.projectLinks ?? []).map {
+        "- \($0.project.title) [\($0.role.rawValue), \($0.status.rawValue), confidence=\(String(format: "%.2f", $0.confidence))]"
+      }.joined(separator: "\n")
+    let relatedPeople = (session.relatedPeople ?? []).isEmpty
+      ? "- None"
+      : (session.relatedPeople ?? []).map { "- \($0.displayName)" }.joined(separator: "\n")
+    let participantPositions = (session.participantPositions ?? []).isEmpty
+      ? "- None"
+      : (session.participantPositions ?? []).map {
+        let label = $0.person?.displayName ?? $0.label
+        return "- \(label): \($0.stance)"
+      }.joined(separator: "\n")
+    let reviewComments = (session.reviewComments ?? []).isEmpty
+      ? "- None"
+      : (session.reviewComments ?? []).map {
+        let proposed = $0.proposedText.map { " -> \($0)" } ?? ""
+        return "- [\($0.type.rawValue)] \($0.comment)\(proposed)"
+      }.joined(separator: "\n")
+    let corrections = (session.sessionCorrections ?? []).isEmpty
+      ? "- None"
+      : (session.sessionCorrections ?? []).map {
+        let type = $0.type?.isEmpty == false ? " [\($0.type!)]" : ""
+        return "- \($0.wrong) -> \($0.correct)\(type)"
+      }.joined(separator: "\n")
 
     return """
     ---
@@ -127,6 +180,9 @@ public actor MeetingSessionStore {
     ## Live Transcript
     \(transcript)
 
+    ## Corrected Transcript
+    \(correctedTranscript)
+
     ## Summary
     \(session.summary ?? "_Pending_")
 
@@ -136,8 +192,32 @@ public actor MeetingSessionStore {
     ## Key Points
     \(keyPoints)
 
+    ## Decisions
+    \(decisions)
+
     ## Action Items
     \(actionItems)
+
+    ## Open Loops
+    \(openLoops)
+
+    ## Risks
+    \(risks)
+
+    ## Related Projects
+    \(projectLinks)
+
+    ## Related People
+    \(relatedPeople)
+
+    ## Participant Positions
+    \(participantPositions)
+
+    ## Corrections
+    \(corrections)
+
+    ## Review Comments
+    \(reviewComments)
 
     ## Error
     \(session.errorMessage ?? "_None_")

@@ -39,6 +39,10 @@ public struct RuntimePaths: Sendable {
     dictionaryDirectory.appending(path: "Business Dictionary.md", directoryHint: .notDirectory)
   }
 
+  public var correctionMemoryFile: URL {
+    dictionaryDirectory.appending(path: "Correction Memory.json", directoryHint: .notDirectory)
+  }
+
   public var obsidianMeetingsDirectory: URL {
     runtimeDirectory.appending(path: "Obsidian/Meetings/Native", directoryHint: .isDirectory)
   }

@@ -5,6 +5,7 @@ import Foundation
 public enum AudioInputCatalog {
   public static let mixedInputPrefix = "mixed-audio:"
   public static let systemAudioInputID = "system-audio:main-display"
+  public static let manualInputID = "manual-input"
 
   public static func availableInputs() -> [AudioInputDevice] {
     let discovery = AVCaptureDevice.DiscoverySession(
@@ -18,12 +19,17 @@ public enum AudioInputCatalog {
     }
 
     let mixedInputs = hardwareInputs.map(makeMixedInput(for:))
-    return mixedInputs + [AudioInputDevice(id: systemAudioInputID, name: "System Audio")] + hardwareInputs
+    return mixedInputs
+      + [AudioInputDevice(id: systemAudioInputID, name: "System Audio")]
+      + hardwareInputs
+      + [AudioInputDevice(id: manualInputID, name: "Manual Input")]
   }
 
   public static func preferredInput(from devices: [AudioInputDevice]) -> AudioInputDevice? {
     let mixedInputs = devices.filter { isMixedInput(id: $0.id) }
-    let hardwareInputs = devices.filter { !isSystemAudioInput(id: $0.id) && !isMixedInput(id: $0.id) }
+    let hardwareInputs = devices.filter {
+      !isSystemAudioInput(id: $0.id) && !isMixedInput(id: $0.id) && !isManualInput(id: $0.id)
+    }
 
     if let preferredMixed = mixedInputs.first(where: { isPreferredBuiltInMicrophoneName($0.name) }) {
       return preferredMixed
@@ -49,6 +55,10 @@ public enum AudioInputCatalog {
       position: .unspecified
     )
     return discovery.devices.first(where: { $0.uniqueID == id })
+  }
+
+  public static func isManualInput(id: String) -> Bool {
+    id == manualInputID
   }
 
   public static func isSystemAudioInput(id: String) -> Bool {

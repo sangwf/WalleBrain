@@ -288,11 +288,21 @@ private struct MeetingWorkspaceView: View {
   @AppStorage("meetingInspectorVisible") private var isInspectorVisible = false
   @State private var isTranscriptAutoFollow = true
   @State private var transcriptScrollRequestID = 0
+  @State private var summaryBlockHeight: CGFloat = 64
+  @State private var organizedBlockHeight: CGFloat = 140
+  @State private var keyPointsBlockHeight: CGFloat = 64
+  @State private var actionItemsBlockHeight: CGFloat = 64
+  @State private var decisionsBlockHeight: CGFloat = 64
   @State private var copyTranscriptTask: Task<Void, Never>?
   @State private var copyStructuredNotesTask: Task<Void, Never>?
   @State private var didCopyTranscript = false
   @State private var didCopyStructuredNotes = false
   @FocusState private var isTitleFieldFocused: Bool
+  @State private var showsSummaryReviewSheet = false
+  @State private var selectedReviewBlock: MeetingBlockKind = .executiveSummary
+  @State private var summaryReviewType: ReviewFeedbackType = .omission
+  @State private var summaryReviewComment = ""
+  @State private var summaryReviewProposedText = ""
 
   var body: some View {
     HStack(spacing: 0) {
@@ -301,6 +311,7 @@ private struct MeetingWorkspaceView: View {
           documentHeader
           controlStrip
           transcriptSection
+          pendingCorrectionsSection
           generatedSection
         }
         .padding(32)
@@ -322,6 +333,7 @@ private struct MeetingWorkspaceView: View {
       transcriptScrollRequestID += 1
       didCopyTranscript = false
       didCopyStructuredNotes = false
+      resetSummaryReviewDraft()
     }
     .onChange(of: isTitleFieldFocused) { _, focused in
       guard !focused else {
@@ -331,6 +343,34 @@ private struct MeetingWorkspaceView: View {
       Task {
         await model.commitMeetingTitleChange()
       }
+    }
+    .sheet(isPresented: $showsSummaryReviewSheet) {
+      SummaryReviewSheet(
+        blockTitle: model.reviewLabel(for: selectedReviewBlock),
+        reviewType: $summaryReviewType,
+        comment: $summaryReviewComment,
+        proposedText: $summaryReviewProposedText,
+        isSubmitting: model.isMeetingActionInFlight,
+        onCancel: {
+          showsSummaryReviewSheet = false
+        },
+        onSubmit: {
+          let type = summaryReviewType
+          let comment = summaryReviewComment
+          let proposedText = summaryReviewProposedText
+          let block = selectedReviewBlock
+          showsSummaryReviewSheet = false
+          Task {
+            await model.reviewBlock(
+              kind: block,
+              type: type,
+              comment: comment,
+              proposedText: proposedText
+            )
+          }
+          resetSummaryReviewDraft()
+        }
+      )
     }
   }
 
@@ -363,7 +403,7 @@ private struct MeetingWorkspaceView: View {
 
       HStack(spacing: 10) {
         metadataPill(model.currentSession?.status.rawValue.capitalized ?? "Idle")
-        metadataPill(model.currentSession?.selectedInput?.name ?? "Microphone")
+        metadataPill(model.currentSession?.selectedInput?.name ?? (model.selectedInputIsManual ? "Manual Input" : "Microphone"))
       }
 
       if model.shouldShowScreenRecordingHint {
@@ -441,7 +481,7 @@ private struct MeetingWorkspaceView: View {
         .controlSize(.small)
         .disabled(transcriptText.isEmpty)
 
-        if let count = model.currentSession?.transcriptChunks.count, count > 0 {
+        if !model.currentSessionUsesManualInput, let count = model.currentSession?.transcriptChunks.count, count > 0 {
           Text("\(count) chunks")
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -449,7 +489,9 @@ private struct MeetingWorkspaceView: View {
       }
 
       ZStack(alignment: .bottomTrailing) {
-        if transcriptText.isEmpty {
+        if model.isManualTranscriptEditable {
+          manualTranscriptEditor
+        } else if transcriptText.isEmpty {
           Text("Live transcript will appear here after the meeting starts.")
             .font(.system(size: 22, weight: .regular, design: .rounded))
             .foregroundStyle(.secondary)
@@ -459,7 +501,11 @@ private struct MeetingWorkspaceView: View {
           TranscriptTextView(
             text: transcriptText,
             isAutoFollow: $isTranscriptAutoFollow,
-            scrollRequestID: transcriptScrollRequestID
+            scrollRequestID: transcriptScrollRequestID,
+            isCorrectionEnabled: model.canApplyCorrections && !model.isManualTranscriptEditable,
+            onQueueCorrection: { wrong, correct in
+              model.addDraftCorrection(wrong: wrong, correct: correct)
+            }
           )
         }
 
@@ -479,6 +525,88 @@ private struct MeetingWorkspaceView: View {
     }
   }
 
+  private var manualTranscriptEditor: some View {
+    ZStack(alignment: .topLeading) {
+      if model.manualTranscriptDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        Text("Type or paste notes here. You can also use macOS dictation or another input method while the meeting is running.")
+          .font(.system(size: 22, weight: .regular, design: .rounded))
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, 24)
+          .padding(.vertical, 22)
+          .allowsHitTesting(false)
+      }
+
+      TextEditor(
+        text: Binding(
+          get: { model.manualTranscriptDraft },
+          set: { model.updateManualTranscriptDraft($0) }
+        )
+      )
+      .font(.system(size: 22, weight: .regular, design: .rounded))
+      .scrollContentBackground(.hidden)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 8)
+    }
+  }
+
+  private var pendingCorrectionsSection: some View {
+    Group {
+      if !model.currentSessionCorrections.isEmpty {
+        VStack(alignment: .leading, spacing: 12) {
+          HStack(alignment: .center, spacing: 12) {
+            Text("Pending Corrections")
+              .font(.headline)
+
+            Text("\(model.currentSessionCorrections.count)")
+              .font(.caption.weight(.semibold))
+              .padding(.horizontal, 8)
+              .padding(.vertical, 4)
+              .background(Color.secondary.opacity(0.08))
+              .clipShape(Capsule())
+
+            Spacer()
+
+            Toggle("Save to Memory", isOn: $model.saveDraftCorrectionsToMemory)
+              .toggleStyle(.checkbox)
+              .font(.subheadline)
+
+            Button("Regenerate Notes") {
+              Task {
+                await model.regenerateNotesFromDraftCorrections()
+              }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!model.canApplyCorrections)
+          }
+
+          ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+              ForEach(model.currentSessionCorrections) { correction in
+                HStack(spacing: 8) {
+                  Text("\(correction.wrong) → \(correction.correct)")
+                    .lineLimit(1)
+                  Button {
+                    model.removeDraftCorrection(correction)
+                  } label: {
+                    Image(systemName: "xmark")
+                      .font(.caption.weight(.bold))
+                  }
+                  .buttonStyle(.plain)
+                }
+                .font(.subheadline)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(Capsule())
+              }
+            }
+            .padding(.vertical, 2)
+          }
+        }
+      }
+    }
+  }
+
   private var generatedSection: some View {
     VStack(alignment: .leading, spacing: 14) {
       HStack {
@@ -495,13 +623,60 @@ private struct MeetingWorkspaceView: View {
         .disabled(structuredNotesText.isEmpty)
       }
 
-      documentBlock(title: "Summary", content: model.currentSession?.summary ?? "Summary will be generated after you stop the meeting.")
+      documentBlock(
+        title: "Summary",
+        content: model.currentSession?.summary ?? "Summary will be generated after you stop the meeting.",
+        height: $summaryBlockHeight,
+        isCorrectable: !summaryText.isEmpty,
+        actionLabel: reviewButtonLabel(for: .executiveSummary),
+        actionEnabled: model.canReviewBlock(.executiveSummary),
+        action: {
+          selectedReviewBlock = .executiveSummary
+          showsSummaryReviewSheet = true
+        }
+      )
       documentBlock(
         title: "Organized Transcript",
-        content: organizedTranscriptText
+        content: organizedTranscriptText,
+        height: $organizedBlockHeight,
+        isCorrectable: organizedTranscriptAvailable
       )
-      documentBlock(title: "Key Points", content: bulletList(model.currentSession?.keyPoints))
-      documentBlock(title: "Action Items", content: bulletList(model.currentSession?.actionItems))
+      documentBlock(
+        title: "Key Points",
+        content: bulletList(model.currentSession?.keyPoints),
+        height: $keyPointsBlockHeight,
+        isCorrectable: !(model.currentSession?.keyPoints.isEmpty ?? true),
+        actionLabel: reviewButtonLabel(for: .keyPoint),
+        actionEnabled: model.canReviewBlock(.keyPoint),
+        action: {
+          selectedReviewBlock = .keyPoint
+          showsSummaryReviewSheet = true
+        }
+      )
+      documentBlock(
+        title: "Action Items",
+        content: bulletList(model.currentSession?.actionItems),
+        height: $actionItemsBlockHeight,
+        isCorrectable: !(model.currentSession?.actionItems.isEmpty ?? true),
+        actionLabel: reviewButtonLabel(for: .actionItem),
+        actionEnabled: model.canReviewBlock(.actionItem),
+        action: {
+          selectedReviewBlock = .actionItem
+          showsSummaryReviewSheet = true
+        }
+      )
+      documentBlock(
+        title: "Decisions",
+        content: decisionListText,
+        height: $decisionsBlockHeight,
+        isCorrectable: !((model.currentSession?.decisions ?? []).isEmpty),
+        actionLabel: reviewButtonLabel(for: .decision),
+        actionEnabled: model.canReviewBlock(.decision),
+        action: {
+          selectedReviewBlock = .decision
+          showsSummaryReviewSheet = true
+        }
+      )
     }
   }
 
@@ -514,12 +689,39 @@ private struct MeetingWorkspaceView: View {
       .clipShape(Capsule())
   }
 
-  private func documentBlock(title: String, content: String) -> some View {
+  private func documentBlock(
+    title: String,
+    content: String,
+    height: Binding<CGFloat>,
+    isCorrectable: Bool,
+    actionLabel: String? = nil,
+    actionEnabled: Bool = false,
+    action: (() -> Void)? = nil
+  ) -> some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text(title)
-        .font(.headline)
-      Text(content)
-        .textSelection(.enabled)
+      HStack(alignment: .center, spacing: 12) {
+        Text(title)
+          .font(.headline)
+        Spacer()
+        if let actionLabel, let action {
+          Button(actionLabel, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!actionEnabled)
+        }
+      }
+      SelectableTextBlockView(
+        text: content,
+        measuredHeight: height,
+        isCorrectionEnabled: isCorrectable && model.canApplyCorrections,
+        onQueueCorrection: { wrong, correct in
+          guard isCorrectable else {
+            return
+          }
+          model.addDraftCorrection(wrong: wrong, correct: correct)
+        }
+      )
+        .frame(maxWidth: .infinity, minHeight: height.wrappedValue, idealHeight: height.wrappedValue, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
     .padding(16)
@@ -535,8 +737,9 @@ private struct MeetingWorkspaceView: View {
   }
 
   private var transcriptText: String {
-    model.currentSession?.liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-      ? model.currentSession?.liveTranscript ?? ""
+    let source = model.isManualTranscriptEditable ? model.manualTranscriptDraft : (model.currentSession?.liveTranscript ?? "")
+    return source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+      ? source
       : ""
   }
 
@@ -544,6 +747,10 @@ private struct MeetingWorkspaceView: View {
     model.currentSession?.organizedTranscript?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
       ? model.currentSession?.organizedTranscript ?? ""
       : "Organized transcript will be generated after you stop the meeting."
+  }
+
+  private var organizedTranscriptAvailable: Bool {
+    !(model.currentSession?.organizedTranscript?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
   }
 
   private var summaryText: String {
@@ -571,7 +778,19 @@ private struct MeetingWorkspaceView: View {
       sections.append("Action Items\n" + actionItems.map { "- \($0)" }.joined(separator: "\n"))
     }
 
+    if let decisions = model.currentSession?.decisions, !decisions.isEmpty {
+      sections.append("Decisions\n" + decisions.map { "- \($0.text)" }.joined(separator: "\n"))
+    }
+
     return sections.joined(separator: "\n\n")
+  }
+
+  private var decisionListText: String {
+    guard let decisions = model.currentSession?.decisions, !decisions.isEmpty else {
+      return "None"
+    }
+
+    return decisions.map { "• \($0.text) [\($0.status.rawValue)]" }.joined(separator: "\n")
   }
 
   private func copyTranscript() {
@@ -609,6 +828,91 @@ private struct MeetingWorkspaceView: View {
   private func copyToPasteboard(_ text: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
+  }
+
+  private func resetSummaryReviewDraft() {
+    summaryReviewType = .omission
+    summaryReviewComment = ""
+    summaryReviewProposedText = ""
+  }
+
+  private func reviewButtonLabel(for kind: MeetingBlockKind) -> String {
+    let count = model.reviewCommentCount(for: kind)
+    return count > 0 ? "Review (\(count))" : "Review"
+  }
+
+}
+
+private struct SummaryReviewSheet: View {
+  let blockTitle: String
+  @Binding var reviewType: ReviewFeedbackType
+  @Binding var comment: String
+  @Binding var proposedText: String
+  let isSubmitting: Bool
+  let onCancel: () -> Void
+  let onSubmit: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      HStack {
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Review \(blockTitle)")
+            .font(.title2.weight(.semibold))
+          Text("点评这个块，并只重写这一个块。")
+            .foregroundStyle(.secondary)
+        }
+        Spacer()
+      }
+
+      VStack(alignment: .leading, spacing: 8) {
+        Text("Feedback Type")
+          .font(.headline)
+
+        Picker("Feedback Type", selection: $reviewType) {
+          Text("Omission").tag(ReviewFeedbackType.omission)
+          Text("Factual Error").tag(ReviewFeedbackType.factualError)
+          Text("Emphasis").tag(ReviewFeedbackType.emphasis)
+          Text("Style").tag(ReviewFeedbackType.style)
+          Text("Custom").tag(ReviewFeedbackType.custom)
+        }
+        .pickerStyle(.segmented)
+      }
+
+      VStack(alignment: .leading, spacing: 8) {
+        Text("Comment")
+          .font(.headline)
+        TextEditor(text: $comment)
+          .font(.body)
+          .frame(minHeight: 120)
+          .padding(10)
+          .background(Color.secondary.opacity(0.05))
+          .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+      }
+
+      VStack(alignment: .leading, spacing: 8) {
+        Text("Suggested Rewrite")
+          .font(.headline)
+        TextEditor(text: $proposedText)
+          .font(.body)
+          .frame(minHeight: 100)
+          .padding(10)
+          .background(Color.secondary.opacity(0.05))
+          .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+      }
+
+      HStack {
+        Button("Cancel", action: onCancel)
+          .buttonStyle(.bordered)
+
+        Spacer()
+
+        Button("Rewrite \(blockTitle)", action: onSubmit)
+          .buttonStyle(.borderedProminent)
+          .disabled(isSubmitting || comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      }
+    }
+    .padding(24)
+    .frame(minWidth: 640, minHeight: 420, alignment: .topLeading)
   }
 }
 

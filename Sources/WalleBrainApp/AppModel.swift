@@ -24,11 +24,14 @@ final class AppModel: ObservableObject {
   @Published var availableInputs: [AudioInputDevice] = []
   @Published var selectedInputID: String?
   @Published var currentSession: NativeMeetingSession?
+  @Published var manualTranscriptDraft = ""
   @Published var recentSessions: [NativeMeetingSession] = []
   @Published var isMeetingActionInFlight = false
+  @Published var draftCorrections: [TranscriptCorrection] = []
+  @Published var saveDraftCorrectionsToMemory = false
   @Published var modelBaseURLReference = "$DEERAPI_BASE_URL"
   @Published var modelAPIKeyReference = "$DEERAPI_KEY"
-  @Published var modelsReference = "gemini-3-flash-preview"
+  @Published var modelsReference = ModelConfiguration.defaultModelsReference
   @Published var modelConfigurationStatusMessage = ""
   @Published var isTestingModelConfiguration = false
 
@@ -37,6 +40,7 @@ final class AppModel: ObservableObject {
   private var activeLiveSessionID: UUID?
   private var isRecentSessionsReloadInFlight = false
   private var recentSessionsReloadVersion = 0
+  private var manualTranscriptSaveTask: Task<Void, Never>?
 
   init() {
     liveCoordinator = LiveMeetingCoordinator(paths: paths) { _ in }
@@ -76,6 +80,29 @@ final class AppModel: ObservableObject {
       return
     }
     selectedInputID = preferredUsableInput(from: inputs)?.id
+  }
+
+  func updateManualTranscriptDraft(_ transcript: String) {
+    manualTranscriptDraft = transcript
+
+    guard isManualTranscriptEditable, var session = currentSession else {
+      return
+    }
+
+    session.liveTranscript = transcript
+    session.transcriptChunks = transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? []
+      : [TranscriptChunk(id: "manual-input", startSeconds: 0, durationSeconds: 0, text: transcript)]
+    currentSession = session
+
+    manualTranscriptSaveTask?.cancel()
+    manualTranscriptSaveTask = Task { [weak self] in
+      try? await Task.sleep(for: .milliseconds(250))
+      guard !Task.isCancelled else {
+        return
+      }
+      await self?.persistManualTranscriptDraft(transcript)
+    }
   }
 
   func loadDictionary() async {
@@ -153,9 +180,11 @@ final class AppModel: ObservableObject {
   private func loadRecentSessionsNow() async {
     do {
       let store = MeetingSessionStore(paths: paths)
-      let sessions = try await store.listSessions(limit: 12)
-      recentSessions = sessions
-      if currentSession == nil, let first = sessions.first,
+      let sessions = try await store.listSessions()
+      let visibleSessions = sessions.filter { !isHiddenTestSession($0) }
+      let limitedSessions = Array(visibleSessions.prefix(12))
+      recentSessions = limitedSessions
+      if currentSession == nil, let first = limitedSessions.first,
         [.preparing, .recording, .processing].contains(first.status)
       {
         applySession(first)
@@ -297,10 +326,199 @@ final class AppModel: ObservableObject {
     defer { isMeetingActionInFlight = false }
 
     do {
+      await commitMeetingTitleChange()
+      if isManualTranscriptEditable {
+        manualTranscriptSaveTask?.cancel()
+        try await liveCoordinator.updateManualTranscript(manualTranscriptDraft)
+      }
       try await liveCoordinator.stopMeetingAndProcess()
       if let session = currentSession, session.status == .exported || session.status == .failed {
         upsertRecentSession(session)
+        if session.status == .failed, session.exportedNotePath != nil {
+          statusMessage = "AI post-process failed; exported a transcript-only note."
+        }
       }
+    } catch {
+      statusMessage = error.localizedDescription
+    }
+  }
+
+  func addDraftCorrection(wrong: String, correct: String, type: String? = nil) {
+    guard canApplyCorrections else {
+      return
+    }
+
+    guard let normalized = normalizedCorrection(
+      TranscriptCorrection(wrong: wrong, correct: correct, type: type)
+    ) else {
+      statusMessage = "Please enter a different replacement for the selected text."
+      return
+    }
+
+    if let existingIndex = draftCorrections.firstIndex(where: { $0.wrong == normalized.wrong }) {
+      draftCorrections[existingIndex] = normalized
+      statusMessage = "Updated correction for \(normalized.wrong)."
+      return
+    }
+
+    draftCorrections.append(normalized)
+    statusMessage = "Queued correction for \(normalized.wrong)."
+  }
+
+  func removeDraftCorrection(_ correction: TranscriptCorrection) {
+    draftCorrections.removeAll { $0.id == correction.id }
+  }
+
+  func regenerateNotesFromDraftCorrections() async {
+    guard !isMeetingActionInFlight else {
+      return
+    }
+    guard var session = currentSession else {
+      return
+    }
+
+    let normalizedCorrections = draftCorrections.compactMap(normalizedCorrection)
+
+    isMeetingActionInFlight = true
+    defer { isMeetingActionInFlight = false }
+
+    do {
+      session.sessionCorrections = normalizedCorrections.isEmpty ? nil : normalizedCorrections
+      session.status = .processing
+      currentSession = session
+      upsertRecentSession(session)
+      try await MeetingSessionStore(paths: paths).save(session)
+
+      if saveDraftCorrectionsToMemory {
+        try await CorrectionMemoryStore(paths: paths).merge(normalizedCorrections)
+      }
+
+      session = try await MeetingPostProcessor(paths: paths).process(session)
+      currentSession = session
+      upsertRecentSession(session)
+      lastExportPath = session.exportedNotePath ?? lastExportPath
+      try await MeetingSessionStore(paths: paths).save(session)
+      draftCorrections = session.sessionCorrections ?? []
+
+      if session.status == .exported {
+        statusMessage = "Regenerated notes via \(session.model ?? "local")."
+      } else {
+        statusMessage = "AI post-process failed; exported a transcript-only note."
+      }
+    } catch {
+      statusMessage = error.localizedDescription
+    }
+  }
+
+  func reviewBlock(
+    kind: MeetingBlockKind,
+    type: ReviewFeedbackType,
+    comment: String,
+    proposedText: String?
+  ) async {
+    guard !isMeetingActionInFlight else {
+      return
+    }
+    guard var session = currentSession else {
+      return
+    }
+
+    let normalizedComment = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalizedProposedText = proposedText?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    guard canReviewBlock(kind), !normalizedComment.isEmpty else {
+      statusMessage = "Please enter a review comment for this block."
+      return
+    }
+
+    let anchor = MeetingBlockAnchor(
+      kind: kind,
+      transcriptQuote: currentBlockQuote(for: kind, session: session)
+    )
+    let reviewComment = ReviewComment(
+      anchor: anchor,
+      type: type,
+      comment: normalizedComment,
+      proposedText: normalizedProposedText?.isEmpty == false ? normalizedProposedText : nil
+    )
+    let revisionRequest = RevisionRequest(
+      scope: .block,
+      anchor: anchor,
+      instructions: revisionInstructions(
+        kind: kind,
+        type: type,
+        comment: normalizedComment,
+        proposedText: normalizedProposedText
+      ),
+      reviewCommentIDs: [reviewComment.id]
+    )
+
+    session.reviewComments = (session.reviewComments ?? []) + [reviewComment]
+    session.revisionRequests = (session.revisionRequests ?? []) + [revisionRequest]
+    currentSession = session
+    upsertRecentSession(session)
+
+    isMeetingActionInFlight = true
+    defer { isMeetingActionInFlight = false }
+
+    do {
+      try await MeetingSessionStore(paths: paths).save(session)
+
+      let client = try DeerAPIClient(configuration: currentModelConfiguration)
+      var appliedComment = reviewComment
+      appliedComment.status = .applied
+      var appliedRequest = revisionRequest
+      appliedRequest.status = .applied
+
+      switch kind {
+      case .executiveSummary:
+        let revision = try await client.reviseSummary(
+          transcript: transcriptForRevision(from: session),
+          currentSummary: session.summary ?? "",
+          reviewComment: reviewComment,
+          request: revisionRequest
+        )
+        session.summary = revision.summary
+        session.provider = revision.provider
+        session.model = revision.model
+      case .keyPoint:
+        let items = try await client.reviseListBlock(
+          transcript: transcriptForRevision(from: session),
+          blockKind: kind,
+          currentItems: session.keyPoints,
+          reviewComment: reviewComment,
+          request: revisionRequest
+        )
+        session.keyPoints = items
+      case .actionItem:
+        let items = try await client.reviseListBlock(
+          transcript: transcriptForRevision(from: session),
+          blockKind: kind,
+          currentItems: session.actionItems,
+          reviewComment: reviewComment,
+          request: revisionRequest
+        )
+        session.actionItems = items
+      case .decision:
+        let decisions = try await client.reviseDecisionsBlock(
+          transcript: transcriptForRevision(from: session),
+          currentDecisions: session.decisions ?? [],
+          reviewComment: reviewComment,
+          request: revisionRequest
+        )
+        session.decisions = decisions
+      default:
+        throw WalleBrainError.invalidResponse("Unsupported review block: \(kind.rawValue)")
+      }
+
+      session.reviewComments = replaceReviewComment(appliedComment, in: session.reviewComments ?? [])
+      session.revisionRequests = replaceRevisionRequest(appliedRequest, in: session.revisionRequests ?? [])
+
+      session = try await exportAndSaveSession(session)
+      currentSession = session
+      upsertRecentSession(session)
+      lastExportPath = session.exportedNotePath ?? lastExportPath
+      statusMessage = "Rewrote \(reviewLabel(for: kind).lowercased()) via \(session.model ?? "local")."
     } catch {
       statusMessage = error.localizedDescription
     }
@@ -362,8 +580,12 @@ final class AppModel: ObservableObject {
     currentSession = session
     meetingTitle = session.title
     selectedMode = session.mode
-    if [.preparing, .recording, .processing].contains(session.status) {
-      selectedInputID = session.selectedInput?.id ?? selectedInputID
+    manualTranscriptDraft = session.liveTranscript
+    draftCorrections = session.sessionCorrections ?? []
+    saveDraftCorrectionsToMemory = false
+
+    if let inputID = session.selectedInput?.id, availableInputs.contains(where: { $0.id == inputID }) {
+      selectedInputID = inputID
     } else if availableInputs.contains(where: { $0.id == selectedInputID }) == false {
       selectedInputID = preferredUsableInput(from: availableInputs)?.id
     }
@@ -371,9 +593,13 @@ final class AppModel: ObservableObject {
   }
 
   private func prepareNewMeetingDraft() {
+    manualTranscriptSaveTask?.cancel()
     currentSession = nil
     meetingTitle = "产品讨论会"
     selectedMode = .normal
+    manualTranscriptDraft = ""
+    draftCorrections = []
+    saveDraftCorrectionsToMemory = false
     selectedInputID = preferredUsableInput(from: availableInputs)?.id
   }
 
@@ -391,6 +617,10 @@ final class AppModel: ObservableObject {
   }
 
   private func upsertRecentSession(_ session: NativeMeetingSession) {
+    guard !isHiddenTestSession(session) else {
+      return
+    }
+
     if let index = recentSessions.firstIndex(where: { $0.id == session.id }) {
       recentSessions[index] = session
     } else {
@@ -407,6 +637,25 @@ final class AppModel: ObservableObject {
     if recentSessions.count > 12 {
       recentSessions = Array(recentSessions.prefix(12))
     }
+  }
+
+  private func isHiddenTestSession(_ session: NativeMeetingSession) -> Bool {
+    let title = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty else {
+      return false
+    }
+
+    let hiddenPrefixes = [
+      "Native Real Smoke",
+      "Native System Audio Smoke",
+      "WalleBrain Native Harness",
+      "Acceptance ",
+      "Harness ",
+      "Bridge Run ",
+      "Silence Check",
+    ]
+
+    return hiddenPrefixes.contains { title.hasPrefix($0) }
   }
 
   private func runLaunchSmokeIfRequested() async {
@@ -598,7 +847,190 @@ final class AppModel: ObservableObject {
           || $0.name.contains("MacBook Air麦克风")
           || $0.name.lowercased().contains("built-in microphone"))
     }) ?? inputs.first(where: {
-      !AudioInputCatalog.isSystemAudioInput(id: $0.id) && !AudioInputCatalog.isMixedInput(id: $0.id)
+      !AudioInputCatalog.isSystemAudioInput(id: $0.id)
+        && !AudioInputCatalog.isMixedInput(id: $0.id)
+        && !AudioInputCatalog.isManualInput(id: $0.id)
     })
+  }
+
+  private func persistManualTranscriptDraft(_ transcript: String) async {
+    guard isManualTranscriptEditable else {
+      return
+    }
+
+    do {
+      try await liveCoordinator.updateManualTranscript(transcript)
+    } catch {
+      statusMessage = error.localizedDescription
+    }
+  }
+
+  var selectedInputIsManual: Bool {
+    guard let selectedInputID else {
+      return false
+    }
+
+    return AudioInputCatalog.isManualInput(id: selectedInputID)
+  }
+
+  var currentSessionUsesManualInput: Bool {
+    AudioInputCatalog.isManualInput(id: currentSession?.selectedInput?.id ?? "")
+  }
+
+  var isManualTranscriptEditable: Bool {
+    currentSessionUsesManualInput && currentSession?.status == .recording
+  }
+
+  var canApplyCorrections: Bool {
+    guard !isMeetingActionInFlight, let currentSession else {
+      return false
+    }
+
+    return [.exported, .failed].contains(currentSession.status)
+      && !currentSession.liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  var currentSessionCorrections: [TranscriptCorrection] {
+    draftCorrections
+  }
+
+  func canReviewBlock(_ kind: MeetingBlockKind) -> Bool {
+    guard !isMeetingActionInFlight, let currentSession else {
+      return false
+    }
+
+    let blockHasContent: Bool
+    switch kind {
+    case .executiveSummary:
+      let summary = currentSession.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      blockHasContent = !summary.isEmpty
+    case .keyPoint:
+      blockHasContent = !currentSession.keyPoints.isEmpty
+    case .actionItem:
+      blockHasContent = !currentSession.actionItems.isEmpty
+    case .decision:
+      blockHasContent = !((currentSession.decisions ?? []).isEmpty)
+    default:
+      blockHasContent = false
+    }
+
+    return [.exported, .failed].contains(currentSession.status)
+      && blockHasContent
+      && !transcriptForRevision(from: currentSession).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  func reviewCommentCount(for kind: MeetingBlockKind) -> Int {
+    (currentSession?.reviewComments ?? []).filter { $0.anchor.kind == kind }.count
+  }
+
+  private func normalizedCorrection(_ correction: TranscriptCorrection) -> TranscriptCorrection? {
+    let wrong = correction.wrong.trimmingCharacters(in: .whitespacesAndNewlines)
+    let correct = correction.correct.trimmingCharacters(in: .whitespacesAndNewlines)
+    let type = correction.type?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    guard !wrong.isEmpty, !correct.isEmpty, wrong != correct else {
+      return nil
+    }
+
+    return TranscriptCorrection(id: correction.id, wrong: wrong, correct: correct, type: type?.isEmpty == false ? type : nil)
+  }
+
+  private func revisionInstructions(
+    kind: MeetingBlockKind,
+    type: ReviewFeedbackType,
+    comment: String,
+    proposedText: String?
+  ) -> String {
+    var instructions = "Revise the \(reviewLabel(for: kind).lowercased()) block according to this feedback [\(type.rawValue)]: \(comment)"
+    if let proposedText, !proposedText.isEmpty {
+      instructions += " Proposed wording: \(proposedText)"
+    }
+    return instructions
+  }
+
+  private func transcriptForRevision(from session: NativeMeetingSession) -> String {
+    if let organized = session.organizedTranscript?.trimmingCharacters(in: .whitespacesAndNewlines), !organized.isEmpty {
+      return organized
+    }
+    if let corrected = session.correctedTranscript?.trimmingCharacters(in: .whitespacesAndNewlines), !corrected.isEmpty {
+      return corrected
+    }
+    return session.liveTranscript
+  }
+
+  private func currentBlockQuote(for kind: MeetingBlockKind, session: NativeMeetingSession) -> String? {
+    switch kind {
+    case .executiveSummary:
+      return session.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+    case .keyPoint:
+      return session.keyPoints.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    case .actionItem:
+      return session.actionItems.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    case .decision:
+      return (session.decisions ?? []).map(\.text).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    default:
+      return nil
+    }
+  }
+
+  func reviewLabel(for kind: MeetingBlockKind) -> String {
+    switch kind {
+    case .executiveSummary:
+      return "Summary"
+    case .keyPoint:
+      return "Key Points"
+    case .actionItem:
+      return "Action Items"
+    case .decision:
+      return "Decisions"
+    default:
+      return "Block"
+    }
+  }
+
+  private func exportAndSaveSession(_ session: NativeMeetingSession) async throws -> NativeMeetingSession {
+    let exporter = NoteExporter(paths: paths)
+    let notePath = try await exporter.export(
+      note: NativeMeetingNote(
+        title: session.title,
+        startedAt: session.startedAt,
+        endedAt: session.endedAt,
+        transcript: session.correctedTranscript?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+          ? session.correctedTranscript!
+          : session.liveTranscript,
+        liveTranscript: session.liveTranscript,
+        summary: session.summary ?? "",
+        organizedTranscript: session.organizedTranscript ?? "",
+        keyPoints: session.keyPoints,
+        actionItems: session.actionItems,
+        decisions: session.decisions ?? [],
+        openLoops: session.openLoops ?? [],
+        risks: session.risks ?? [],
+        participantPositions: session.participantPositions ?? [],
+        projectLinks: session.projectLinks ?? [],
+        relatedPeople: session.relatedPeople ?? [],
+        dictionaryPath: session.dictionaryPath,
+        audioFilePath: session.audioFilePath,
+        provider: session.provider ?? "local",
+        model: session.model ?? "manual-revision"
+      )
+    )
+
+    var updatedSession = session
+    updatedSession.exportedNotePath = notePath.path(percentEncoded: false)
+    try await MeetingSessionStore(paths: paths).save(updatedSession)
+    return updatedSession
+  }
+
+  private func replaceReviewComment(_ updated: ReviewComment, in comments: [ReviewComment]) -> [ReviewComment] {
+    comments.map { existing in
+      existing.id == updated.id ? updated : existing
+    }
+  }
+
+  private func replaceRevisionRequest(_ updated: RevisionRequest, in requests: [RevisionRequest]) -> [RevisionRequest] {
+    requests.map { existing in
+      existing.id == updated.id ? updated : existing
+    }
   }
 }

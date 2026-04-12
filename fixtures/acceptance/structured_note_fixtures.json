@@ -1,0 +1,60 @@
+{
+  "fixtures": [
+    {
+      "id": "decision-action-project",
+      "title": "Decision And Action With Confirmed Project",
+      "transcript": "我们决定 Atlas 下周上线，这周内把发布 checklist 补齐。",
+      "expectations": {
+        "decisionContains": ["Atlas 下周上线"],
+        "actionItemContains": ["发布 checklist"],
+        "preserveTentativeTerms": [],
+        "forbidDecisions": false,
+        "forbidActionItems": false,
+        "projectStatusByID": {
+          "project-atlas": "confirmed"
+        }
+      }
+    },
+    {
+      "id": "tentative-no-hallucinated-action",
+      "title": "Tentative Discussion Without Forced Action",
+      "transcript": "预算可能下个月再看，先观察一下。",
+      "expectations": {
+        "decisionContains": [],
+        "actionItemContains": [],
+        "preserveTentativeTerms": ["可能"],
+        "forbidDecisions": true,
+        "forbidActionItems": true,
+        "projectStatusByID": {}
+      }
+    },
+    {
+      "id": "no-action-background-only",
+      "title": "Background Conversation With No Action Items",
+      "transcript": "今天主要同步背景，没有形成明确 follow-up。",
+      "expectations": {
+        "decisionContains": [],
+        "actionItemContains": [],
+        "preserveTentativeTerms": [],
+        "forbidDecisions": true,
+        "forbidActionItems": true,
+        "projectStatusByID": {}
+      }
+    },
+    {
+      "id": "unresolved-project-link",
+      "title": "Mentioned Project That Stays Unresolved",
+      "transcript": "Apollo 这个事情之后再看，但先别并到现有项目。",
+      "expectations": {
+        "decisionContains": [],
+        "actionItemContains": [],
+        "preserveTentativeTerms": [],
+        "forbidDecisions": false,
+        "forbidActionItems": true,
+        "projectStatusByID": {
+          "apollo": "unresolved"
+        }
+      }
+    }
+  ]
+}

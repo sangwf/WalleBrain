@@ -7,8 +7,8 @@ public actor LiveMeetingCoordinator {
   private let permissionCoordinator = PermissionCoordinator()
   private let dictionaryStore: TermDictionaryStore
   private let compiler: CustomLanguageModelCompiler
-  private let exporter: NoteExporter
   private let sessionStore: MeetingSessionStore
+  private let postProcessor: MeetingPostProcessor
   private let microphoneRecorder = MicrophoneCaptureService()
   private let systemAudioRecorder = SystemAudioCaptureService()
   private let mixedRecorder = MixedCaptureService()
@@ -33,8 +33,8 @@ public actor LiveMeetingCoordinator {
     self.paths = paths
     self.dictionaryStore = TermDictionaryStore(paths: paths)
     self.compiler = CustomLanguageModelCompiler(paths: paths)
-    self.exporter = NoteExporter(paths: paths)
     self.sessionStore = MeetingSessionStore(paths: paths)
+    self.postProcessor = MeetingPostProcessor(paths: paths)
     self.onUpdate = onUpdate
   }
 
@@ -61,9 +61,10 @@ public actor LiveMeetingCoordinator {
     guard let selectedInput else {
       throw WalleBrainError.invalidResponse("No audio input device is available.")
     }
+    let isManualInput = AudioInputCatalog.isManualInput(id: selectedInput.id)
 
     let requiresSystemAudio = AudioInputCatalog.isSystemAudioInput(id: selectedInput.id) || AudioInputCatalog.isMixedInput(id: selectedInput.id)
-    let requiresMicrophone = !AudioInputCatalog.isSystemAudioInput(id: selectedInput.id)
+    let requiresMicrophone = !AudioInputCatalog.isSystemAudioInput(id: selectedInput.id) && !isManualInput
 
     if requiresMicrophone {
       let microphoneGranted = await permissionCoordinator.requestMicrophoneAccess()
@@ -72,15 +73,17 @@ public actor LiveMeetingCoordinator {
       }
     }
 
-    let speechStatus = await permissionCoordinator.requestSpeechAccess()
-    guard speechStatus == .authorized else {
-      throw WalleBrainError.invalidResponse("Speech recognition access was denied.")
-    }
-
     let dictionaryPath = try await dictionaryStore.ensureExists()
-    let dictionary = try await dictionaryStore.loadDictionary()
-    let assets = try await compiler.compile(dictionary: dictionary)
-    _ = await compiler.configuration(for: assets)
+    if !isManualInput {
+      let speechStatus = await permissionCoordinator.requestSpeechAccess()
+      guard speechStatus == .authorized else {
+        throw WalleBrainError.invalidResponse("Speech recognition access was denied.")
+      }
+
+      let dictionary = try await dictionaryStore.loadDictionary()
+      let assets = try await compiler.compile(dictionary: dictionary)
+      _ = await compiler.configuration(for: assets)
+    }
 
     let startedAt = Date()
     var session = try await sessionStore.createSession(
@@ -93,6 +96,15 @@ public actor LiveMeetingCoordinator {
     currentSession = session
     transcriptChunks = [:]
     await emit(session)
+
+    if isManualInput {
+      session.status = .recording
+      currentSession = session
+      try await persistCurrentSession()
+      cleanupTransientState()
+      return
+    }
+
     do {
       await debug("session-created")
       let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: "zh_CN"))
@@ -190,6 +202,7 @@ public actor LiveMeetingCoordinator {
     guard var session = currentSession else {
       throw WalleBrainError.invalidResponse("No running meeting to stop.")
     }
+    let isManualInput = AudioInputCatalog.isManualInput(id: session.selectedInput?.id ?? "")
 
     session.status = .processing
     session.endedAt = Date()
@@ -197,57 +210,17 @@ public actor LiveMeetingCoordinator {
     try await persistCurrentSession()
 
     do {
-      try await stopActiveCapture()
-      try await ensurePrimaryAudioArtifactExists(for: session)
-      try await analyzer?.finalizeAndFinishThroughEndOfInput()
-      _ = try await analyzerTask?.value
-      analyzerTask = nil
-      await resultsTask?.value
-      resultsTask = nil
-
-      session = currentSession ?? session
-      let dictionary = try await dictionaryStore.loadDictionary()
-      let deerAPI: DeerAPIResult
-      if session.liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        deerAPI = DeerAPIResult(
-          provider: "local",
-          model: "empty-transcript",
-          summary: "No speech was captured in this meeting.",
-          organizedTranscript: "No speech was captured in this meeting.",
-          keyPoints: [],
-          actionItems: []
-        )
-      } else {
-        deerAPI = try await DeerAPIClient().summarize(transcript: session.liveTranscript, dictionary: dictionary)
+      if !isManualInput {
+        try await stopActiveCapture()
+        try await ensurePrimaryAudioArtifactExists(for: session)
+        try await analyzer?.finalizeAndFinishThroughEndOfInput()
+        _ = try await analyzerTask?.value
+        analyzerTask = nil
+        await resultsTask?.value
+        resultsTask = nil
       }
 
-      let notePath = try await exporter.export(
-        note: NativeMeetingNote(
-          title: session.title,
-          startedAt: session.startedAt,
-          endedAt: session.endedAt,
-          transcript: session.liveTranscript,
-          liveTranscript: session.liveTranscript,
-          summary: deerAPI.summary,
-          organizedTranscript: deerAPI.organizedTranscript,
-          keyPoints: deerAPI.keyPoints,
-          actionItems: deerAPI.actionItems,
-          dictionaryPath: session.dictionaryPath,
-          audioFilePath: session.audioFilePath,
-          provider: deerAPI.provider,
-          model: deerAPI.model
-        )
-      )
-
-      session.status = .exported
-      session.summary = deerAPI.summary
-      session.organizedTranscript = deerAPI.organizedTranscript
-      session.keyPoints = deerAPI.keyPoints
-      session.actionItems = deerAPI.actionItems
-      session.provider = deerAPI.provider
-      session.model = deerAPI.model
-      session.exportedNotePath = notePath.path(percentEncoded: false)
-      session.errorMessage = nil
+      session = try await postProcessor.process(currentSession ?? session)
       currentSession = session
       try await persistCurrentSession()
       cleanupTransientState()
@@ -268,6 +241,34 @@ public actor LiveMeetingCoordinator {
 
     let normalized = title.trimmingCharacters(in: .whitespacesAndNewlines)
     session.title = normalized.isEmpty ? "会议记录" : normalized
+    currentSession = session
+    try await persistCurrentSession()
+  }
+
+  public func updateManualTranscript(_ transcript: String) async throws {
+    guard var session = currentSession else {
+      return
+    }
+
+    guard AudioInputCatalog.isManualInput(id: session.selectedInput?.id ?? "") else {
+      return
+    }
+
+    let normalized = transcript
+      .replacingOccurrences(of: "\r\n", with: "\n")
+      .replacingOccurrences(of: "\r", with: "\n")
+
+    session.liveTranscript = normalized
+    session.transcriptChunks = normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? []
+      : [
+        TranscriptChunk(
+          id: "manual-input",
+          startSeconds: 0,
+          durationSeconds: 0,
+          text: normalized
+        )
+      ]
     currentSession = session
     try await persistCurrentSession()
   }

@@ -27,6 +27,10 @@ let package = Package(
       name: "WalleBrainRealMeetingSmoke",
       targets: ["WalleBrainRealMeetingSmoke"]
     ),
+    .executable(
+      name: "WalleBrainReprocessSession",
+      targets: ["WalleBrainReprocessSession"]
+    ),
   ],
   targets: [
     .target(
@@ -46,6 +50,10 @@ let package = Package(
     ),
     .executableTarget(
       name: "WalleBrainRealMeetingSmoke",
+      dependencies: ["WalleBrainCore"]
+    ),
+    .executableTarget(
+      name: "WalleBrainReprocessSession",
       dependencies: ["WalleBrainCore"]
     ),
     .testTarget(

@@ -1,6 +1,9 @@
 import Foundation
 
 public struct ModelConfiguration: Codable, Sendable, Hashable {
+  public static let defaultModelsReference = "gemini-3-flash-preview, gemini-3.1-pro-preview"
+  public static let legacyDefaultModelsReference = "gemini-3.1-pro-preview"
+
   public var baseURLReference: String
   public var apiKeyReference: String
   public var modelsReference: String
@@ -8,7 +11,7 @@ public struct ModelConfiguration: Codable, Sendable, Hashable {
   public init(
     baseURLReference: String = "$DEERAPI_BASE_URL",
     apiKeyReference: String = "$DEERAPI_KEY",
-    modelsReference: String = "gemini-3.1-pro-preview"
+    modelsReference: String = ModelConfiguration.defaultModelsReference
   ) {
     self.baseURLReference = baseURLReference
     self.apiKeyReference = apiKeyReference
@@ -59,12 +62,22 @@ public struct ModelConfigurationStore {
   }
 
   public func load() -> ModelConfiguration {
-    ModelConfiguration(
+    let storedModelsReference = defaults.string(forKey: Keys.modelsReference)
+      ?? defaults.string(forKey: Keys.modelReference)
+    let effectiveModelsReference: String
+    if let storedModelsReference {
+      let normalized = storedModelsReference.trimmingCharacters(in: .whitespacesAndNewlines)
+      effectiveModelsReference = normalized == ModelConfiguration.legacyDefaultModelsReference
+        ? ModelConfiguration.defaultModelsReference
+        : storedModelsReference
+    } else {
+      effectiveModelsReference = ModelConfiguration.defaultModelsReference
+    }
+
+    return ModelConfiguration(
       baseURLReference: defaults.string(forKey: Keys.baseURLReference) ?? "$DEERAPI_BASE_URL",
       apiKeyReference: defaults.string(forKey: Keys.apiKeyReference) ?? "$DEERAPI_KEY",
-      modelsReference: defaults.string(forKey: Keys.modelsReference)
-        ?? defaults.string(forKey: Keys.modelReference)
-        ?? "gemini-3-flash-preview"
+      modelsReference: effectiveModelsReference
     )
   }
 
