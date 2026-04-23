@@ -19,6 +19,7 @@ public actor LiveMeetingCoordinator {
   private var transcriber: SpeechTranscriber?
   private var analyzerTask: Task<Void, Error>?
   private var resultsTask: Task<Void, Never>?
+  private var backgroundProcessingTasks: [UUID: Task<Void, Never>] = [:]
   private var transcriptChunks: [String: TranscriptChunk] = [:]
   private let transcriptAssembler = TranscriptAssembler()
   private var activeInputID: String?
@@ -51,7 +52,7 @@ public actor LiveMeetingCoordinator {
     mode: MeetingMode,
     preferredInputID: String? = nil
   ) async throws {
-    if let currentSession, [.preparing, .recording, .processing].contains(currentSession.status) {
+    if let currentSession, [.preparing, .recording].contains(currentSession.status) {
       throw WalleBrainError.invalidResponse("A meeting is already running.")
     }
 
@@ -202,6 +203,7 @@ public actor LiveMeetingCoordinator {
     guard var session = currentSession else {
       throw WalleBrainError.invalidResponse("No running meeting to stop.")
     }
+    let processingSessionID = session.id
     let isManualInput = AudioInputCatalog.isManualInput(id: session.selectedInput?.id ?? "")
 
     session.status = .processing
@@ -220,10 +222,10 @@ public actor LiveMeetingCoordinator {
         resultsTask = nil
       }
 
-      session = try await postProcessor.process(currentSession ?? session)
-      currentSession = session
-      try await persistCurrentSession()
+      let processingSession = currentSession ?? session
       cleanupTransientState()
+      currentSession = nil
+      startBackgroundProcessing(for: processingSession, sessionID: processingSessionID)
     } catch {
       await fail(message: error.localizedDescription)
       throw error
@@ -340,6 +342,33 @@ public actor LiveMeetingCoordinator {
     analyzerTask = nil
     resultsTask = nil
     activeInputID = nil
+  }
+
+  private func startBackgroundProcessing(for session: NativeMeetingSession, sessionID: UUID) {
+    backgroundProcessingTasks[sessionID]?.cancel()
+    backgroundProcessingTasks[sessionID] = Task { [weak self] in
+      await self?.runBackgroundProcessing(for: session, sessionID: sessionID)
+    }
+  }
+
+  private func runBackgroundProcessing(for session: NativeMeetingSession, sessionID: UUID) async {
+    defer { backgroundProcessingTasks[sessionID] = nil }
+
+    do {
+      let processedSession = try await postProcessor.process(session)
+      try await sessionStore.save(processedSession)
+      await emit(processedSession)
+    } catch {
+      var failedSession = session
+      failedSession.status = .failed
+      failedSession.errorMessage = error.localizedDescription
+      do {
+        try await sessionStore.save(failedSession)
+      } catch {
+        // Best-effort persistence; surface the failed state if possible.
+      }
+      await emit(failedSession)
+    }
   }
 
   private func makeAnalyzerTask(

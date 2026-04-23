@@ -38,6 +38,7 @@ final class AppModel: ObservableObject {
   private let paths = RuntimePaths()
   private var liveCoordinator: LiveMeetingCoordinator
   private var activeLiveSessionID: UUID?
+  private var selectedSessionID: UUID?
   private var isRecentSessionsReloadInFlight = false
   private var recentSessionsReloadVersion = 0
   private var manualTranscriptSaveTask: Task<Void, Never>?
@@ -46,16 +47,19 @@ final class AppModel: ObservableObject {
     liveCoordinator = LiveMeetingCoordinator(paths: paths) { _ in }
     liveCoordinator = LiveMeetingCoordinator(paths: paths) { [weak self] session in
       await MainActor.run {
-        if [.preparing, .recording, .processing].contains(session.status) {
+        let shouldSelectLiveSession = [.preparing, .recording].contains(session.status)
+        if shouldSelectLiveSession {
           self?.activeLiveSessionID = session.id
+          self?.selectedSessionID = session.id
         } else if self?.activeLiveSessionID == session.id {
           self?.activeLiveSessionID = nil
         }
-        self?.currentSession = session
-        self?.lastExportPath = session.exportedNotePath ?? self?.lastExportPath ?? ""
-        if session.status == .exported || session.status == .failed {
-          self?.upsertRecentSession(session)
+
+        if shouldSelectLiveSession || self?.selectedSessionID == session.id {
+          self?.currentSession = session
         }
+        self?.lastExportPath = session.exportedNotePath ?? self?.lastExportPath ?? ""
+        self?.upsertRecentSession(session)
       }
     }
   }
@@ -248,7 +252,7 @@ final class AppModel: ObservableObject {
   }
 
   func canDeleteSession(_ session: NativeMeetingSession) -> Bool {
-    activeLiveSessionID != session.id
+    activeLiveSessionID != session.id && session.status != .processing
   }
 
   func deleteSession(_ session: NativeMeetingSession) async {
@@ -332,11 +336,9 @@ final class AppModel: ObservableObject {
         try await liveCoordinator.updateManualTranscript(manualTranscriptDraft)
       }
       try await liveCoordinator.stopMeetingAndProcess()
-      if let session = currentSession, session.status == .exported || session.status == .failed {
+      if let session = currentSession, session.status == .processing {
         upsertRecentSession(session)
-        if session.status == .failed, session.exportedNotePath != nil {
-          statusMessage = "AI post-process failed; exported a transcript-only note."
-        }
+        statusMessage = "Processing \(session.title) in background."
       }
     } catch {
       statusMessage = error.localizedDescription
@@ -542,13 +544,7 @@ final class AppModel: ObservableObject {
     guard !isMeetingActionInFlight else {
       return false
     }
-
-    switch currentSession?.status {
-    case .preparing, .recording, .processing:
-      return false
-    default:
-      return true
-    }
+    return activeLiveSessionID == nil
   }
 
   var canStopMeeting: Bool {
@@ -578,6 +574,7 @@ final class AppModel: ObservableObject {
 
   private func applySession(_ session: NativeMeetingSession) {
     currentSession = session
+    selectedSessionID = session.id
     meetingTitle = session.title
     selectedMode = session.mode
     manualTranscriptDraft = session.liveTranscript
@@ -595,6 +592,7 @@ final class AppModel: ObservableObject {
   private func prepareNewMeetingDraft() {
     manualTranscriptSaveTask?.cancel()
     currentSession = nil
+    selectedSessionID = nil
     meetingTitle = "产品讨论会"
     selectedMode = .normal
     manualTranscriptDraft = ""

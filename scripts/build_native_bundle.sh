@@ -22,7 +22,13 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$EXECUTABLE" "$MACOS_DIR/$PRODUCT_NAME"
 chmod +x "$MACOS_DIR/$PRODUCT_NAME"
 
-ICON_SOURCE="$ROOT_DIR/wallebrain.png"
+ICON_SOURCE="$ROOT_DIR/wallebrain-app-icon-v3.png"
+if [[ ! -f "$ICON_SOURCE" ]]; then
+  ICON_SOURCE="$ROOT_DIR/wallebrain-app-icon-v2.png"
+fi
+if [[ ! -f "$ICON_SOURCE" ]]; then
+  ICON_SOURCE="$ROOT_DIR/wallebrain.png"
+fi
 ICON_NAME="AppIcon"
 
 if [[ -f "$ICON_SOURCE" ]]; then

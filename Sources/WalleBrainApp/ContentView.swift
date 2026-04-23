@@ -298,6 +298,7 @@ private struct MeetingWorkspaceView: View {
   @State private var didCopyTranscript = false
   @State private var didCopyStructuredNotes = false
   @FocusState private var isTitleFieldFocused: Bool
+  @FocusState private var isManualTranscriptFocused: Bool
   @State private var showsSummaryReviewSheet = false
   @State private var selectedReviewBlock: MeetingBlockKind = .executiveSummary
   @State private var summaryReviewType: ReviewFeedbackType = .omission
@@ -527,7 +528,7 @@ private struct MeetingWorkspaceView: View {
 
   private var manualTranscriptEditor: some View {
     ZStack(alignment: .topLeading) {
-      if model.manualTranscriptDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      if model.manualTranscriptDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isManualTranscriptFocused {
         Text("Type or paste notes here. You can also use macOS dictation or another input method while the meeting is running.")
           .font(.system(size: 22, weight: .regular, design: .rounded))
           .foregroundStyle(.secondary)
@@ -543,6 +544,7 @@ private struct MeetingWorkspaceView: View {
         )
       )
       .font(.system(size: 22, weight: .regular, design: .rounded))
+      .focused($isManualTranscriptFocused)
       .scrollContentBackground(.hidden)
       .padding(.horizontal, 10)
       .padding(.vertical, 8)

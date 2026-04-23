@@ -1,14 +1,6 @@
 import Foundation
 
 public actor DeerAPIClient {
-  private static let urlSession: URLSession = {
-    let configuration = URLSessionConfiguration.default
-    configuration.timeoutIntervalForRequest = 900
-    configuration.timeoutIntervalForResource = 1_800
-    configuration.waitsForConnectivity = true
-    return URLSession(configuration: configuration)
-  }()
-
   private let apiKey: String
   private let completionURL: URL
   private let modelChain: [String]
@@ -642,15 +634,11 @@ public actor DeerAPIClient {
     ]
 
     request.httpBody = try JSONSerialization.data(withJSONObject: body)
+    let (statusCode, data) = try Self.performDirectRequest(request)
 
-    let (data, response) = try await Self.urlSession.data(for: request)
-    guard let httpResponse = response as? HTTPURLResponse else {
-      throw WalleBrainError.invalidResponse("Missing HTTP response.")
-    }
-
-    guard (200..<300).contains(httpResponse.statusCode) else {
+    guard (200..<300).contains(statusCode) else {
       throw WalleBrainError.invalidResponse(
-        "HTTP \(httpResponse.statusCode): \(String(decoding: data, as: UTF8.self))"
+        "HTTP \(statusCode): \(String(decoding: data, as: UTF8.self))"
       )
     }
 
@@ -682,6 +670,64 @@ public actor DeerAPIClient {
     }
 
     return url.appending(path: "chat/completions")
+  }
+
+  private static func performDirectRequest(_ request: URLRequest) throws -> (Int, Data) {
+    guard let url = request.url else {
+      throw WalleBrainError.invalidResponse("Missing request URL.")
+    }
+
+    let bodyData = request.httpBody ?? Data()
+    let marker = "__WALLEBRAIN_HTTP_STATUS__:"
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+    process.arguments = [
+      "--noproxy", "*",
+      "-sS",
+      "--max-time", "1800",
+      "-X", request.httpMethod ?? "POST",
+      "-H", "Authorization: \(request.value(forHTTPHeaderField: "Authorization") ?? "")",
+      "-H", "Content-Type: \(request.value(forHTTPHeaderField: "Content-Type") ?? "application/json")",
+      "-w", "\n\(marker)%{http_code}",
+      url.absoluteString,
+      "--data-binary", "@-",
+    ]
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    let stdinPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+    process.standardInput = stdinPipe
+
+    try process.run()
+    if !bodyData.isEmpty {
+      stdinPipe.fileHandleForWriting.write(bodyData)
+    }
+    try? stdinPipe.fileHandleForWriting.close()
+    process.waitUntilExit()
+
+    let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+    let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+
+    guard process.terminationStatus == 0 else {
+      let stderrText = String(decoding: stderrData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+      throw WalleBrainError.invalidResponse(stderrText.isEmpty ? "curl request failed." : stderrText)
+    }
+
+    let stdoutText = String(decoding: stdoutData, as: UTF8.self)
+    guard let markerRange = stdoutText.range(of: marker, options: .backwards) else {
+      throw WalleBrainError.invalidResponse("Missing HTTP status marker from curl output.")
+    }
+
+    let bodyText = String(stdoutText[..<markerRange.lowerBound]).trimmingCharacters(in: .newlines)
+    let statusText = stdoutText[markerRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let statusCode = Int(statusText) else {
+      throw WalleBrainError.invalidResponse("Invalid HTTP status marker from curl output: \(statusText)")
+    }
+
+    return (statusCode, Data(bodyText.utf8))
   }
 
   private func filterDecisions(
@@ -786,6 +832,23 @@ private struct DecisionEnvelope: Decodable {
   let confidence: Double
   let relatedProjectID: String?
   let evidence: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case text
+    case status
+    case confidence
+    case relatedProjectID
+    case evidence
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    text = try container.decode(String.self, forKey: .text)
+    status = try container.decodeIfPresent(DecisionStatus.self, forKey: .status) ?? .candidate
+    confidence = try container.decodeLossyDouble(forKey: .confidence) ?? 0.5
+    relatedProjectID = try container.decodeIfPresent(String.self, forKey: .relatedProjectID)
+    evidence = try container.decodeIfPresent(String.self, forKey: .evidence)
+  }
 }
 
 private struct OpenLoopEnvelope: Decodable {
@@ -796,6 +859,27 @@ private struct OpenLoopEnvelope: Decodable {
   let status: OpenLoopStatus
   let relatedProjectID: String?
   let evidence: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case type
+    case text
+    case owner
+    case dueHint
+    case status
+    case relatedProjectID
+    case evidence
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    type = try container.decodeIfPresent(OpenLoopType.self, forKey: .type) ?? .followUp
+    text = try container.decode(String.self, forKey: .text)
+    owner = try container.decodeIfPresent(String.self, forKey: .owner)
+    dueHint = try container.decodeIfPresent(String.self, forKey: .dueHint)
+    status = try container.decodeIfPresent(OpenLoopStatus.self, forKey: .status) ?? .open
+    relatedProjectID = try container.decodeIfPresent(String.self, forKey: .relatedProjectID)
+    evidence = try container.decodeIfPresent(String.self, forKey: .evidence)
+  }
 }
 
 private struct RiskEnvelope: Decodable {
@@ -803,6 +887,21 @@ private struct RiskEnvelope: Decodable {
   let confidence: Double
   let relatedProjectID: String?
   let evidence: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case text
+    case confidence
+    case relatedProjectID
+    case evidence
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    text = try container.decode(String.self, forKey: .text)
+    confidence = try container.decodeLossyDouble(forKey: .confidence) ?? 0.5
+    relatedProjectID = try container.decodeIfPresent(String.self, forKey: .relatedProjectID)
+    evidence = try container.decodeIfPresent(String.self, forKey: .evidence)
+  }
 }
 
 private struct ParticipantPositionEnvelope: Decodable {
@@ -811,6 +910,23 @@ private struct ParticipantPositionEnvelope: Decodable {
   let stance: String
   let confidence: Double
   let evidence: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case person
+    case label
+    case stance
+    case confidence
+    case evidence
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    person = try container.decodeIfPresent(PersonEnvelope.self, forKey: .person)
+    label = try container.decodeIfPresent(String.self, forKey: .label) ?? person?.displayName ?? "参与者"
+    stance = try container.decode(String.self, forKey: .stance)
+    confidence = try container.decodeLossyDouble(forKey: .confidence) ?? 0.5
+    evidence = try container.decodeIfPresent(String.self, forKey: .evidence)
+  }
 }
 
 private struct ProjectLinkEnvelope: Decodable {
@@ -819,22 +935,91 @@ private struct ProjectLinkEnvelope: Decodable {
   let status: ProjectLinkStatus
   let confidence: Double
   let evidence: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case project
+    case role
+    case status
+    case confidence
+    case evidence
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    project = try container.decode(ProjectEnvelope.self, forKey: .project)
+    role = try container.decodeIfPresent(ProjectLinkRole.self, forKey: .role) ?? .mentioned
+    status = try container.decodeIfPresent(ProjectLinkStatus.self, forKey: .status) ?? .unresolved
+    confidence = try container.decodeLossyDouble(forKey: .confidence) ?? 0.5
+    evidence = try container.decodeIfPresent(String.self, forKey: .evidence)
+  }
 }
 
 private struct ProjectEnvelope: Decodable {
   let id: String
   let title: String
   let aliases: [String]
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case title
+    case aliases
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    title = try container.decode(String.self, forKey: .title)
+    id = try container.decodeIfPresent(String.self, forKey: .id) ?? title
+      .lowercased()
+      .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+      .map(String.init)
+      .joined(separator: "-")
+    aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
+  }
 }
 
 private struct PersonEnvelope: Decodable {
   let id: String
   let displayName: String
   let aliases: [String]
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case displayName
+    case aliases
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    displayName = try container.decode(String.self, forKey: .displayName)
+    id = try container.decodeIfPresent(String.self, forKey: .id) ?? displayName
+      .lowercased()
+      .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+      .map(String.init)
+      .joined(separator: "-")
+    aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
+  }
 }
 
 private extension String {
   var nilIfBlank: String? {
     trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
+  }
+}
+
+private extension KeyedDecodingContainer {
+  func decodeLossyDouble(forKey key: Key) throws -> Double? {
+    if let value = try decodeIfPresent(Double.self, forKey: key) {
+      return value
+    }
+
+    if let value = try decodeIfPresent(Int.self, forKey: key) {
+      return Double(value)
+    }
+
+    if let value = try decodeIfPresent(String.self, forKey: key) {
+      return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    return nil
   }
 }
