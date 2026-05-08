@@ -868,13 +868,14 @@ final class AppModel: ObservableObject {
     let description = error.localizedDescription
     if description.contains("Screen Recording access was denied.")
       || description.contains("Screen Recording access is required for System Audio.")
+      || description.contains("Screen & System Audio Recording access is required for System Audio.")
     {
       let fallback = preferredMicrophoneInput(from: availableInputs)
       selectedInputID = fallback?.id
       if let fallback {
-        statusMessage = "System Audio 需要 Screen Recording。已切换到 \(fallback.name)。如果你刚刚在系统设置里授权过，请彻底退出并重新打开 WalleBrain 一次。"
+        statusMessage = "System Audio 需要 Screen & System Audio Recording 权限。已切换到 \(fallback.name)。如果你刚刚在系统设置里授权过，请彻底退出并重新打开 WalleBrain 一次。"
       } else {
-        statusMessage = "System Audio 需要 Screen Recording。如果你刚刚在系统设置里授权过，请彻底退出并重新打开 WalleBrain 一次；否则请改用纯麦克风输入。"
+        statusMessage = "System Audio 需要 Screen & System Audio Recording 权限。如果你刚刚在系统设置里授权过，请彻底退出并重新打开 WalleBrain 一次；否则请改用纯麦克风输入。"
       }
       return
     }
