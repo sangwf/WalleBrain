@@ -411,10 +411,10 @@ private struct MeetingWorkspaceView: View {
         HStack(spacing: 10) {
           Image(systemName: "exclamationmark.triangle.fill")
             .foregroundStyle(.orange)
-          Text("当前输入依赖 Screen Recording，但系统还没授权。未授权时会自动回退到纯麦克风。")
+          Text("当前输入依赖 Screen & System Audio Recording，但系统还没授权。未授权时会自动回退到纯麦克风。")
             .font(.subheadline)
           Spacer()
-          Button("Open Screen Recording Settings") {
+          Button("Open Privacy Settings") {
             model.openScreenRecordingSettings()
           }
           .buttonStyle(.bordered)
