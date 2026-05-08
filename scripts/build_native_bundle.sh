@@ -74,6 +74,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
   <string>26.0</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>WalleBrain records meeting audio to generate live transcripts and notes.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>WalleBrain captures system audio when you choose a system-audio meeting input.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>WalleBrain uses speech recognition to create live meeting transcripts.</string>
 </dict>

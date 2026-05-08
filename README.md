@@ -33,7 +33,7 @@ Current distribution limitation:
 - macOS 26 or later
 - Swift 6.2 toolchain
 - microphone permission for live meetings
-- screen recording permission if you want system audio capture
+- Screen & System Audio Recording permission if you want system audio capture
 - an OpenAI-compatible chat completions endpoint for post-processing
 
 ## Quick Start

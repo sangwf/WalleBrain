@@ -30,10 +30,12 @@ struct WalleBrainAcceptance {
       let appLaunchLaunched = try runBundleLaunchSmoke(appURL: appBundle)
       report["bundle"] = [
         "passed": hasUsageDescription(in: appBundle, key: "NSMicrophoneUsageDescription")
+          && hasUsageDescription(in: appBundle, key: "NSAudioCaptureUsageDescription")
           && hasUsageDescription(in: appBundle, key: "NSSpeechRecognitionUsageDescription")
           && appLaunchLaunched,
         "path": appBundle.path(percentEncoded: false),
         "hasMicrophoneUsageDescription": hasUsageDescription(in: appBundle, key: "NSMicrophoneUsageDescription"),
+        "hasAudioCaptureUsageDescription": hasUsageDescription(in: appBundle, key: "NSAudioCaptureUsageDescription"),
         "hasSpeechUsageDescription": hasUsageDescription(in: appBundle, key: "NSSpeechRecognitionUsageDescription"),
         "launchSmoke": appLaunchLaunched,
       ]
@@ -104,7 +106,7 @@ struct WalleBrainAcceptance {
           "permissionRequired": false,
         ]
       case .failed:
-        guard systemAudioSmoke.errorMessage?.contains("Screen Recording access was denied.") == true else {
+        guard systemAudioSmoke.errorMessage?.contains("System Audio") == true else {
           throw WalleBrainError.invalidResponse("System audio smoke failed unexpectedly: \(systemAudioSmoke.errorMessage ?? "unknown error")")
         }
         systemAudioCheck = [

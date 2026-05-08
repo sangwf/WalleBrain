@@ -149,7 +149,7 @@ public final class SystemAudioCaptureService: NSObject, @unchecked Sendable {
       || lowered.contains("permission")
       || lowered.contains("denied")
     {
-      return .invalidResponse("Screen Recording access is required for System Audio. If you just enabled it in System Settings, quit and reopen WalleBrain once.")
+      return .invalidResponse("Screen & System Audio Recording access is required for System Audio. If you just enabled it in System Settings, quit and reopen WalleBrain once.")
     }
 
     return .invalidResponse(diagnostic)
