@@ -16,12 +16,12 @@ type ChatMessage = {
   content: string | ChatContentPart[];
 };
 
-type DeerApiClientOptions = {
+type LLMChatClientOptions = {
   baseUrl: string;
   apiKey: string;
 };
 
-type DeerApiResponse = {
+type LLMChatResponse = {
   error?: {
     message?: string;
     type?: string;
@@ -34,8 +34,8 @@ type DeerApiResponse = {
   model?: string;
 };
 
-export class DeerApiClient {
-  constructor(private readonly options: DeerApiClientOptions) {}
+export class LLMChatClient {
+  constructor(private readonly options: LLMChatClientOptions) {}
 
   async createChatCompletion(input: {
     model: string;
@@ -55,16 +55,16 @@ export class DeerApiClient {
       }),
     });
 
-    const data = await response.json() as DeerApiResponse;
+    const data = await response.json() as LLMChatResponse;
 
     if (!response.ok || data.error) {
-      throw new Error(data.error?.message ?? `DeerAPI request failed with ${response.status}`);
+      throw new Error(data.error?.message ?? `LLM request failed with ${response.status}`);
     }
 
     const content = data.choices?.[0]?.message?.content;
 
     if (!content) {
-      throw new Error("DeerAPI response did not include assistant content.");
+      throw new Error("LLM response did not include assistant content.");
     }
 
     return {

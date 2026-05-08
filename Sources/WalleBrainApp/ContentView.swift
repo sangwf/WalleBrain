@@ -623,6 +623,18 @@ private struct MeetingWorkspaceView: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .disabled(structuredNotesText.isEmpty)
+
+        if model.canReprocessCurrentSession {
+          Button {
+            Task {
+              await model.reprocessCurrentSession()
+            }
+          } label: {
+            Label(model.currentSession?.status == .failed ? "Retry AI" : "Regenerate AI", systemImage: "arrow.triangle.2.circlepath")
+          }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+        }
       }
 
       documentBlock(
@@ -993,7 +1005,7 @@ private struct TermDictionaryView: View {
       Text("Term Dictionary")
         .font(.largeTitle)
 
-      Text("像 Obsidian 里的词典笔记一样直接编辑。这里的术语会同时进入 Apple Speech 定制资产和会后 DeerAPI 提示词。")
+      Text("像 Obsidian 里的词典笔记一样直接编辑。这里的术语会同时进入 Apple Speech 定制资产和会后 LLM 提示词。")
         .foregroundStyle(.secondary)
 
       HStack {
@@ -1109,6 +1121,13 @@ private struct SettingsSheetView: View {
           )
 
           modelsField
+
+          configurationField(
+            title: "Provider Label",
+            text: $model.modelProviderLabelReference,
+            preview: model.modelConfigurationPreview.providerLabel,
+            masksResolvedValue: false
+          )
         }
         .padding(8)
       } label: {

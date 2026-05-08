@@ -29,9 +29,10 @@ final class AppModel: ObservableObject {
   @Published var isMeetingActionInFlight = false
   @Published var draftCorrections: [TranscriptCorrection] = []
   @Published var saveDraftCorrectionsToMemory = false
-  @Published var modelBaseURLReference = "$DEERAPI_BASE_URL"
-  @Published var modelAPIKeyReference = "$DEERAPI_KEY"
+  @Published var modelBaseURLReference = ModelConfiguration.defaultBaseURLReference
+  @Published var modelAPIKeyReference = ModelConfiguration.defaultAPIKeyReference
   @Published var modelsReference = ModelConfiguration.defaultModelsReference
+  @Published var modelProviderLabelReference = ModelConfiguration.defaultProviderLabelReference
   @Published var modelConfigurationStatusMessage = ""
   @Published var isTestingModelConfiguration = false
 
@@ -42,24 +43,38 @@ final class AppModel: ObservableObject {
   private var isRecentSessionsReloadInFlight = false
   private var recentSessionsReloadVersion = 0
   private var manualTranscriptSaveTask: Task<Void, Never>?
+  private var manualTranscriptSaveVersion = 0
 
   init() {
     liveCoordinator = LiveMeetingCoordinator(paths: paths) { _ in }
     liveCoordinator = LiveMeetingCoordinator(paths: paths) { [weak self] session in
       await MainActor.run {
-        let shouldSelectLiveSession = [.preparing, .recording].contains(session.status)
-        if shouldSelectLiveSession {
-          self?.activeLiveSessionID = session.id
-          self?.selectedSessionID = session.id
-        } else if self?.activeLiveSessionID == session.id {
-          self?.activeLiveSessionID = nil
+        guard let self else {
+          return
         }
 
-        if shouldSelectLiveSession || self?.selectedSessionID == session.id {
-          self?.currentSession = session
+        var updatedSession = session
+        if
+          updatedSession.status == .recording,
+          AudioInputCatalog.isManualInput(id: updatedSession.selectedInput?.id ?? "")
+        {
+          updatedSession.liveTranscript = self.manualTranscriptDraft
+          updatedSession.transcriptChunks = Self.manualTranscriptChunks(for: self.manualTranscriptDraft)
         }
-        self?.lastExportPath = session.exportedNotePath ?? self?.lastExportPath ?? ""
-        self?.upsertRecentSession(session)
+
+        let shouldSelectLiveSession = [.preparing, .recording].contains(session.status)
+        if shouldSelectLiveSession {
+          self.activeLiveSessionID = updatedSession.id
+          self.selectedSessionID = updatedSession.id
+        } else if self.activeLiveSessionID == updatedSession.id {
+          self.activeLiveSessionID = nil
+        }
+
+        if shouldSelectLiveSession || self.selectedSessionID == updatedSession.id {
+          self.currentSession = updatedSession
+        }
+        self.lastExportPath = updatedSession.exportedNotePath ?? self.lastExportPath
+        self.upsertRecentSession(updatedSession)
       }
     }
   }
@@ -89,23 +104,19 @@ final class AppModel: ObservableObject {
   func updateManualTranscriptDraft(_ transcript: String) {
     manualTranscriptDraft = transcript
 
-    guard isManualTranscriptEditable, var session = currentSession else {
+    guard isManualTranscriptEditable else {
       return
     }
 
-    session.liveTranscript = transcript
-    session.transcriptChunks = transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      ? []
-      : [TranscriptChunk(id: "manual-input", startSeconds: 0, durationSeconds: 0, text: transcript)]
-    currentSession = session
-
+    manualTranscriptSaveVersion += 1
+    let saveVersion = manualTranscriptSaveVersion
     manualTranscriptSaveTask?.cancel()
     manualTranscriptSaveTask = Task { [weak self] in
-      try? await Task.sleep(for: .milliseconds(250))
+      try? await Task.sleep(for: .milliseconds(500))
       guard !Task.isCancelled else {
         return
       }
-      await self?.persistManualTranscriptDraft(transcript)
+      await self?.persistManualTranscriptDraft(transcript, version: saveVersion)
     }
   }
 
@@ -136,6 +147,7 @@ final class AppModel: ObservableObject {
     modelBaseURLReference = configuration.baseURLReference
     modelAPIKeyReference = configuration.apiKeyReference
     modelsReference = configuration.modelsReference
+    modelProviderLabelReference = configuration.providerLabelReference
     if modelConfigurationStatusMessage.isEmpty {
       modelConfigurationStatusMessage = "Ready"
     }
@@ -155,7 +167,7 @@ final class AppModel: ObservableObject {
     defer { isTestingModelConfiguration = false }
 
     do {
-      let result = try await DeerAPIClient(configuration: currentModelConfiguration).testConnection()
+      let result = try await LLMChatClient(configuration: currentModelConfiguration).testConnection()
       modelConfigurationStatusMessage = "Connected via \(result.model)"
     } catch {
       modelConfigurationStatusMessage = error.localizedDescription
@@ -332,6 +344,7 @@ final class AppModel: ObservableObject {
     do {
       await commitMeetingTitleChange()
       if isManualTranscriptEditable {
+        manualTranscriptSaveVersion += 1
         manualTranscriptSaveTask?.cancel()
         try await liveCoordinator.updateManualTranscript(manualTranscriptDraft)
       }
@@ -412,6 +425,44 @@ final class AppModel: ObservableObject {
     }
   }
 
+  func reprocessCurrentSession() async {
+    guard !isMeetingActionInFlight, canReprocessCurrentSession, var session = currentSession else {
+      return
+    }
+
+    isMeetingActionInFlight = true
+    defer { isMeetingActionInFlight = false }
+
+    do {
+      session.status = .processing
+      session.errorMessage = nil
+      currentSession = session
+      upsertRecentSession(session)
+      statusMessage = "Retrying AI post-processing for \(session.title)."
+      try await MeetingSessionStore(paths: paths).save(session)
+
+      session = try await MeetingPostProcessor(paths: paths).process(session)
+      currentSession = session
+      upsertRecentSession(session)
+      lastExportPath = session.exportedNotePath ?? lastExportPath
+      try await MeetingSessionStore(paths: paths).save(session)
+      draftCorrections = session.sessionCorrections ?? []
+
+      if session.status == .exported {
+        statusMessage = "Regenerated notes via \(session.model ?? "local")."
+      } else {
+        statusMessage = "AI post-process failed again; kept a transcript-only note."
+      }
+    } catch {
+      session.status = .failed
+      session.errorMessage = error.localizedDescription
+      currentSession = session
+      upsertRecentSession(session)
+      try? await MeetingSessionStore(paths: paths).save(session)
+      statusMessage = error.localizedDescription
+    }
+  }
+
   func reviewBlock(
     kind: MeetingBlockKind,
     type: ReviewFeedbackType,
@@ -466,7 +517,7 @@ final class AppModel: ObservableObject {
     do {
       try await MeetingSessionStore(paths: paths).save(session)
 
-      let client = try DeerAPIClient(configuration: currentModelConfiguration)
+      let client = try LLMChatClient(configuration: currentModelConfiguration)
       var appliedComment = reviewComment
       appliedComment.status = .applied
       var appliedRequest = revisionRequest
@@ -534,7 +585,7 @@ final class AppModel: ObservableObject {
       let result = try await harness.run(transcript: "高德地图")
       lastExportPath = result.notePath.path(percentEncoded: false)
       lastAssetsPath = result.assets.languageModelURL.path(percentEncoded: false)
-      statusMessage = "Harness succeeded via \(result.deerAPI.model)."
+      statusMessage = "Harness succeeded via \(result.llmResult.model)."
     } catch {
       statusMessage = error.localizedDescription
     }
@@ -573,6 +624,8 @@ final class AppModel: ObservableObject {
   }
 
   private func applySession(_ session: NativeMeetingSession) {
+    manualTranscriptSaveVersion += 1
+    manualTranscriptSaveTask?.cancel()
     currentSession = session
     selectedSessionID = session.id
     meetingTitle = session.title
@@ -590,6 +643,7 @@ final class AppModel: ObservableObject {
   }
 
   private func prepareNewMeetingDraft() {
+    manualTranscriptSaveVersion += 1
     manualTranscriptSaveTask?.cancel()
     currentSession = nil
     selectedSessionID = nil
@@ -610,7 +664,8 @@ final class AppModel: ObservableObject {
     ModelConfiguration(
       baseURLReference: modelBaseURLReference,
       apiKeyReference: modelAPIKeyReference,
-      modelsReference: modelsReference
+      modelsReference: modelsReference,
+      providerLabelReference: modelProviderLabelReference
     )
   }
 
@@ -851,8 +906,12 @@ final class AppModel: ObservableObject {
     })
   }
 
-  private func persistManualTranscriptDraft(_ transcript: String) async {
-    guard isManualTranscriptEditable else {
+  private func persistManualTranscriptDraft(_ transcript: String, version: Int) async {
+    guard
+      isManualTranscriptEditable,
+      version == manualTranscriptSaveVersion,
+      transcript == manualTranscriptDraft
+    else {
       return
     }
 
@@ -861,6 +920,12 @@ final class AppModel: ObservableObject {
     } catch {
       statusMessage = error.localizedDescription
     }
+  }
+
+  private static func manualTranscriptChunks(for transcript: String) -> [TranscriptChunk] {
+    transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? []
+      : [TranscriptChunk(id: "manual-input", startSeconds: 0, durationSeconds: 0, text: transcript)]
   }
 
   var selectedInputIsManual: Bool {
@@ -885,6 +950,16 @@ final class AppModel: ObservableObject {
     }
 
     return [.exported, .failed].contains(currentSession.status)
+      && !currentSession.liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  var canReprocessCurrentSession: Bool {
+    guard !isMeetingActionInFlight, let currentSession else {
+      return false
+    }
+
+    return activeLiveSessionID != currentSession.id
+      && [.exported, .failed].contains(currentSession.status)
       && !currentSession.liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 

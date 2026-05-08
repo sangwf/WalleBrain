@@ -348,7 +348,7 @@ public struct MeetingOpenLoop: Identifiable, Codable, Sendable, Hashable {
   }
 }
 
-public struct DeerAPIResult: Sendable, Hashable {
+public struct LLMPostProcessingResult: Sendable, Hashable {
   public let provider: String
   public let model: String
   public let summary: String
@@ -648,7 +648,7 @@ public struct FixtureHarnessResult: Sendable, Hashable {
   public let dictionaryPath: URL
   public let assets: CompiledLanguageAssets
   public let notePath: URL
-  public let deerAPI: DeerAPIResult
+  public let llmResult: LLMPostProcessingResult
 }
 
 public enum WalleBrainError: Error, LocalizedError {

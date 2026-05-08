@@ -1,21 +1,28 @@
 import Foundation
 
 public struct ModelConfiguration: Codable, Sendable, Hashable {
-  public static let defaultModelsReference = "gemini-3-flash-preview, gemini-3.1-pro-preview"
+  public static let defaultBaseURLReference = "$WALLEBRAIN_LLM_BASE_URL"
+  public static let defaultAPIKeyReference = "$WALLEBRAIN_LLM_API_KEY"
+  public static let defaultModelsReference = "$WALLEBRAIN_LLM_MODELS"
+  public static let defaultProviderLabelReference = "OpenAI-compatible"
+  public static let legacyDefaultModelsChainReference = "gemini-3-flash-preview, gemini-3.1-pro-preview"
   public static let legacyDefaultModelsReference = "gemini-3.1-pro-preview"
 
   public var baseURLReference: String
   public var apiKeyReference: String
   public var modelsReference: String
+  public var providerLabelReference: String
 
   public init(
-    baseURLReference: String = "$DEERAPI_BASE_URL",
-    apiKeyReference: String = "$DEERAPI_KEY",
-    modelsReference: String = ModelConfiguration.defaultModelsReference
+    baseURLReference: String = ModelConfiguration.defaultBaseURLReference,
+    apiKeyReference: String = ModelConfiguration.defaultAPIKeyReference,
+    modelsReference: String = ModelConfiguration.defaultModelsReference,
+    providerLabelReference: String = ModelConfiguration.defaultProviderLabelReference
   ) {
     self.baseURLReference = baseURLReference
     self.apiKeyReference = apiKeyReference
     self.modelsReference = modelsReference
+    self.providerLabelReference = providerLabelReference
   }
 }
 
@@ -34,10 +41,11 @@ public struct ResolvedModelConfigurationPreview: Sendable, Hashable {
   public let baseURL: ResolvedConfigurationValue
   public let apiKey: ResolvedConfigurationValue
   public let models: ResolvedConfigurationValue
+  public let providerLabel: ResolvedConfigurationValue
   public let resolvedModels: [String]
 
   public var isValid: Bool {
-    baseURL.isValid && apiKey.isValid && models.isValid && !resolvedModels.isEmpty
+    baseURL.isValid && apiKey.isValid && models.isValid && providerLabel.isValid && !resolvedModels.isEmpty
   }
 }
 
@@ -45,6 +53,7 @@ public struct ResolvedModelConfiguration: Sendable, Hashable {
   public let baseURL: String
   public let apiKey: String
   public let models: [String]
+  public let providerLabel: String
 }
 
 public struct ModelConfigurationStore {
@@ -53,6 +62,7 @@ public struct ModelConfigurationStore {
     static let apiKeyReference = "WalleBrain.ModelConfiguration.apiKeyReference"
     static let modelReference = "WalleBrain.ModelConfiguration.modelReference"
     static let modelsReference = "WalleBrain.ModelConfiguration.modelsReference"
+    static let providerLabelReference = "WalleBrain.ModelConfiguration.providerLabelReference"
   }
 
   private let defaults: UserDefaults
@@ -68,6 +78,7 @@ public struct ModelConfigurationStore {
     if let storedModelsReference {
       let normalized = storedModelsReference.trimmingCharacters(in: .whitespacesAndNewlines)
       effectiveModelsReference = normalized == ModelConfiguration.legacyDefaultModelsReference
+        || normalized == ModelConfiguration.legacyDefaultModelsChainReference
         ? ModelConfiguration.defaultModelsReference
         : storedModelsReference
     } else {
@@ -75,9 +86,10 @@ public struct ModelConfigurationStore {
     }
 
     return ModelConfiguration(
-      baseURLReference: defaults.string(forKey: Keys.baseURLReference) ?? "$DEERAPI_BASE_URL",
-      apiKeyReference: defaults.string(forKey: Keys.apiKeyReference) ?? "$DEERAPI_KEY",
-      modelsReference: effectiveModelsReference
+      baseURLReference: defaults.string(forKey: Keys.baseURLReference) ?? ModelConfiguration.defaultBaseURLReference,
+      apiKeyReference: defaults.string(forKey: Keys.apiKeyReference) ?? ModelConfiguration.defaultAPIKeyReference,
+      modelsReference: effectiveModelsReference,
+      providerLabelReference: defaults.string(forKey: Keys.providerLabelReference) ?? ModelConfiguration.defaultProviderLabelReference
     )
   }
 
@@ -85,6 +97,7 @@ public struct ModelConfigurationStore {
     defaults.set(configuration.baseURLReference, forKey: Keys.baseURLReference)
     defaults.set(configuration.apiKeyReference, forKey: Keys.apiKeyReference)
     defaults.set(configuration.modelsReference, forKey: Keys.modelsReference)
+    defaults.set(configuration.providerLabelReference, forKey: Keys.providerLabelReference)
   }
 }
 
@@ -105,6 +118,7 @@ public struct ModelConfigurationResolver: Sendable {
       baseURL: resolveField(configuration.baseURLReference, label: "Base URL"),
       apiKey: resolveField(configuration.apiKeyReference, label: "API Key"),
       models: models,
+      providerLabel: resolveField(configuration.providerLabelReference, label: "Provider Label"),
       resolvedModels: parseModels(from: models.resolvedValue)
     )
   }
@@ -121,6 +135,9 @@ public struct ModelConfigurationResolver: Sendable {
     if let errorMessage = preview.models.errorMessage {
       throw WalleBrainError.invalidResponse(errorMessage)
     }
+    if let errorMessage = preview.providerLabel.errorMessage {
+      throw WalleBrainError.invalidResponse(errorMessage)
+    }
 
     guard let baseURL = preview.baseURL.resolvedValue, URL(string: baseURL) != nil else {
       throw WalleBrainError.invalidResponse("Resolved Base URL is invalid.")
@@ -131,11 +148,15 @@ public struct ModelConfigurationResolver: Sendable {
     guard !preview.resolvedModels.isEmpty else {
       throw WalleBrainError.invalidResponse("Resolved models list is empty.")
     }
+    guard let providerLabel = preview.providerLabel.resolvedValue, !providerLabel.isEmpty else {
+      throw WalleBrainError.invalidResponse("Resolved Provider Label is empty.")
+    }
 
     return ResolvedModelConfiguration(
       baseURL: baseURL,
       apiKey: apiKey,
-      models: preview.resolvedModels
+      models: preview.resolvedModels,
+      providerLabel: providerLabel
     )
   }
 
@@ -189,20 +210,62 @@ public struct ModelConfigurationResolver: Sendable {
       )
     }
 
-    guard let value = mergedEnvironment[variableName], !value.isEmpty else {
+    if let value = mergedEnvironment[variableName], !value.isEmpty {
       return ResolvedConfigurationValue(
         rawValue: rawValue,
-        resolvedValue: nil,
+        resolvedValue: value,
         sourceDescription: "Environment: \(variableName)",
-        errorMessage: "Environment variable \(variableName) is not set."
+        errorMessage: nil
       )
+    }
+
+    if let fallback = legacyFallback(for: variableName) {
+      return fallbackValue(for: fallback, rawValue: rawValue, primaryVariableName: variableName, label: label)
     }
 
     return ResolvedConfigurationValue(
       rawValue: rawValue,
-      resolvedValue: value,
+      resolvedValue: nil,
       sourceDescription: "Environment: \(variableName)",
-      errorMessage: nil
+      errorMessage: "Environment variable \(variableName) is not set."
+    )
+  }
+
+  private func legacyFallback(for variableName: String) -> [String]? {
+    switch variableName {
+    case "WALLEBRAIN_LLM_BASE_URL":
+      return ["OPENAI_BASE_URL", "DEERAPI_BASE_URL"]
+    case "WALLEBRAIN_LLM_API_KEY":
+      return ["DEERAPI_KEY", "OPENAI_API_KEY"]
+    case "WALLEBRAIN_LLM_MODELS":
+      return ["WALLEBRAIN_MODELS", "OPENAI_MODEL"]
+    default:
+      return nil
+    }
+  }
+
+  private func fallbackValue(
+    for variableNames: [String],
+    rawValue: String,
+    primaryVariableName: String,
+    label: String
+  ) -> ResolvedConfigurationValue {
+    for variableName in variableNames {
+      if let value = mergedEnvironment[variableName], !value.isEmpty {
+        return ResolvedConfigurationValue(
+          rawValue: rawValue,
+          resolvedValue: value,
+          sourceDescription: "Environment: \(variableName) fallback for \(primaryVariableName)",
+          errorMessage: nil
+        )
+      }
+    }
+
+    return ResolvedConfigurationValue(
+      rawValue: rawValue,
+      resolvedValue: nil,
+      sourceDescription: "Environment: \(primaryVariableName)",
+      errorMessage: "Environment variable \(primaryVariableName) is not set."
     )
   }
 }

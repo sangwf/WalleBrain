@@ -63,7 +63,7 @@ export type AudioArtifact = {
 };
 
 export type PostProcessResult = {
-  provider: "fake" | "deerapi";
+  provider: "fake" | "openai-compatible";
   model: string | null;
   transcript: string;
   summary: string;

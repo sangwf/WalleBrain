@@ -28,10 +28,10 @@ public actor MeetingPostProcessor {
       : correctedTranscript
     session.correctedTranscript = effectiveTranscript
 
-    let result: DeerAPIResult
+    let result: LLMPostProcessingResult
     let aiSucceeded: Bool
     if effectiveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      result = DeerAPIResult(
+      result = LLMPostProcessingResult(
         provider: "local",
         model: "empty-transcript",
         summary: "No speech was captured in this meeting.",
@@ -43,7 +43,7 @@ public actor MeetingPostProcessor {
       aiSucceeded = true
     } else {
       do {
-        result = try await DeerAPIClient().summarize(transcript: effectiveTranscript, dictionary: dictionary)
+        result = try await LLMChatClient().summarize(transcript: effectiveTranscript, dictionary: dictionary)
         aiSucceeded = true
       } catch {
         result = fallbackResult(for: effectiveTranscript, error: error)
@@ -109,8 +109,8 @@ public actor MeetingPostProcessor {
     return try await dictionaryStore.loadDictionary()
   }
 
-  private func fallbackResult(for transcript: String, error: Error) -> DeerAPIResult {
-    DeerAPIResult(
+  private func fallbackResult(for transcript: String, error: Error) -> LLMPostProcessingResult {
+    LLMPostProcessingResult(
       provider: "local",
       model: "postprocess-failed",
       summary: "AI post-processing did not complete. Reason: \(error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines))",

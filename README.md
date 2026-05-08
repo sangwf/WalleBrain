@@ -5,7 +5,7 @@ WalleBrain is a native macOS meeting workspace for live transcription and post-p
 It currently focuses on:
 - live transcription with Apple Speech APIs
 - microphone / system-audio / mixed capture
-- structured meeting notes generated through a DeerAPI-hosted Gemini-compatible model
+- structured meeting notes generated through a configurable OpenAI-compatible LLM endpoint
 - an editable term dictionary for company- or domain-specific vocabulary
 - Markdown export to an Obsidian-style directory layout
 
@@ -34,31 +34,33 @@ Current distribution limitation:
 - Swift 6.2 toolchain
 - microphone permission for live meetings
 - screen recording permission if you want system audio capture
-- a DeerAPI-compatible endpoint for post-processing
+- an OpenAI-compatible chat completions endpoint for post-processing
 
 ## Quick Start
 
-### 1. Configure DeerAPI
+### 1. Configure the LLM endpoint
 
-You can configure the app either from environment variables or inside the app settings.
+You can configure the app either from environment variables or inside the app settings. Settings fields accept either literal values or `$ENV_VAR` references.
 
 Example environment variables:
 
 ```bash
-export DEERAPI_BASE_URL="https://api.deerapi.com/v1"
-export DEERAPI_KEY="your-api-key"
+export WALLEBRAIN_LLM_BASE_URL="https://api.openai.com/v1"
+export WALLEBRAIN_LLM_API_KEY="your-api-key"
+export WALLEBRAIN_LLM_MODELS="gpt-4.1-mini"
 ```
 
 You can also open `Settings` in the app and set:
 - `Base URL`
 - `API Key`
 - `Models`
+- `Provider Label`
 
 `Models` supports:
-- a single model: `gemini-3-flash-preview`
-- an ordered fallback chain: `gemini-3.1-flash, gemini-3-flash-preview, gemini-2.5-flash`
+- a single model: `gpt-4.1-mini`
+- an ordered fallback chain: `gpt-4.1-mini, gpt-4.1`
 
-If a setting starts with `$`, WalleBrain resolves it as an environment variable.
+If a setting starts with `$`, WalleBrain resolves it as an environment variable. Otherwise, the setting is used as a literal value. The app expects an OpenAI-compatible `/chat/completions` API; if the base URL ends at `/v1`, WalleBrain appends `/chat/completions` automatically.
 
 ### 2. Run tests
 
@@ -105,7 +107,7 @@ These files are kept as historical prototype code and are not the main product p
 
 - live speech recognition is performed locally through Apple speech APIs
 - meeting audio is saved locally under `runtime/`
-- post-processing sends transcript text, not raw audio, to the configured DeerAPI endpoint
+- post-processing sends transcript text, not raw audio, to the configured LLM endpoint
 
 ## Roadmap Gaps
 

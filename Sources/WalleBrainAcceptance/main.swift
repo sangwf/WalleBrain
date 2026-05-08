@@ -143,7 +143,7 @@ struct WalleBrainAcceptance {
       let fixtureSuite = try AcceptanceHarness.loadStructuredNoteFixtureSuite(baseDirectory: baseURL)
       let dictionary = try await TermDictionaryStore(paths: paths).loadDictionary()
       let fixtureConfiguration = fixtureEvaluationConfiguration()
-      let realFixtureClient = try DeerAPIClient(configuration: fixtureConfiguration)
+      let realFixtureClient = try LLMChatClient(configuration: fixtureConfiguration)
       let fixtureEval = try await AcceptanceHarness.evaluateFixtureSuiteReal(
         fixtureSuite,
         dictionary: dictionary,
@@ -188,10 +188,10 @@ struct WalleBrainAcceptance {
         "languageModel": harnessResult.assets.languageModelURL.path(percentEncoded: false),
         "vocabulary": harnessResult.assets.vocabularyURL.path(percentEncoded: false),
         "systemAudioSmoke": systemAudioCheck,
-        "deerAPI": [
-          "provider": harnessResult.deerAPI.provider,
-          "model": harnessResult.deerAPI.model,
-          "summary": harnessResult.deerAPI.summary,
+        "llmResult": [
+          "provider": harnessResult.llmResult.provider,
+          "model": harnessResult.llmResult.model,
+          "summary": harnessResult.llmResult.summary,
         ],
       ]
 

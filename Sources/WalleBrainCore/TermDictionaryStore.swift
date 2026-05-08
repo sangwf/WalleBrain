@@ -121,7 +121,7 @@ public actor TermDictionaryStore {
   - type: product
   - notes: Native macOS meeting assistant
 
-  ## DeerAPI
+  ## LLM
   - aliases: deer api
   - type: service
   - notes: Model gateway used for post-processing

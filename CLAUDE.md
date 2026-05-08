@@ -17,7 +17,7 @@ The system has two parallel implementations:
 ```bash
 npm run typecheck                # Type-check TypeScript (tsc --noEmit)
 npm run run-harness              # Run fake meeting harness end-to-end
-npm run run-harness -- --processor real  # Run with real DeerAPI post-processing
+npm run run-harness -- --processor real  # Run with real LLM post-processing
 npm run create-session           # Create a meeting session
 npm run eval-dataset             # Evaluate transcript quality against dataset
 npm run acceptance-check         # Run acceptance criteria checks
@@ -53,8 +53,8 @@ Session Create → Recording → Live Transcription → Stop → Post-Processing
 - `src/meeting/orchestration/meeting-orchestrator.ts` — Central coordinator. Wires together launcher, recorder, dictation, post-processor, and exporter. Manages session state transitions.
 - `src/meeting/session/session-types.ts` — All TypeScript types for sessions, artifacts, and processing state.
 - `src/meeting/session/session-store.ts` — Persists session JSON to disk.
-- `src/meeting/postprocess/post-processor-factory.ts` — Creates fake or real (DeerAPI) post-processor based on env vars or `--processor` flag.
-- `src/meeting/llm/deerapi-client.ts` — OpenAI-compatible chat completion client for DeerAPI.
+- `src/meeting/postprocess/post-processor-factory.ts` — Creates fake or real LLM post-processor based on env vars or `--processor` flag.
+- `src/meeting/llm/llm-chat-client.ts` — OpenAI-compatible chat completion client.
 - `src/meeting/export/note-exporter.ts` — Generates final Obsidian markdown from session + post-process results.
 - `src/meeting/recorder/` — Recorder interface with fake (fixture-based) and real (ffmpeg/avfoundation) implementations.
 - `src/meeting/dictation/` — Dictation bridge interface with fake implementation.
@@ -68,7 +68,7 @@ Session Create → Recording → Live Transcription → Stop → Post-Processing
   - `LiveMeetingCoordinator.swift` — Actor orchestrating the full meeting lifecycle (permissions, capture, transcription, summarization, export).
   - `MicrophoneCaptureService.swift` / `SystemAudioCaptureService.swift` / `MixedCaptureService.swift` — Three audio capture modes (mic-only, system audio, mixed).
   - `TranscriptAssembler.swift` — Merges overlapping speech recognition chunks into clean transcript.
-  - `DeerAPIClient.swift` — LLM summarization using the configured `Models` list from settings, tried from left to right.
+  - `LLMChatClient.swift` — OpenAI-compatible LLM summarization using the configured `Models` list from settings, tried from left to right.
   - `CustomLanguageModelCompiler.swift` / `TermDictionaryStore.swift` — Custom vocabulary for improving domain-specific speech recognition.
   - `NoteExporter.swift` — Generates Obsidian markdown with frontmatter.
   - `Models.swift` — All Swift model types (`NativeMeetingSession`, `MeetingMode`, `MeetingStatus`, etc.).
@@ -87,10 +87,12 @@ Session files, audio recordings, exported notes, and evaluation datasets are sto
 
 ## Key Environment Variables
 
-- `DEERAPI_KEY` — API key for the DeerAPI LLM service (required for real post-processing)
-- `DEERAPI_BASE_URL` — Base URL for DeerAPI (OpenAI-compatible endpoint)
+- `WALLEBRAIN_LLM_API_KEY` — API key for the configured OpenAI-compatible LLM endpoint
+- `WALLEBRAIN_LLM_BASE_URL` — Base URL for the configured OpenAI-compatible endpoint
+- `WALLEBRAIN_LLM_MODELS` — comma-separated model fallback chain
+- `WALLEBRAIN_LLM_PROVIDER_LABEL` — optional label used in exported metadata
 
-Both are read from the shell environment. The Swift layer also loads them from the user's shell profile via `ShellEnvironmentLoader`.
+These can be provided as shell environment variables or referenced from the native app settings with `$ENV_VAR`. The Swift layer also loads simple exported values from the user's shell profile via `ShellEnvironmentLoader`.
 
 ## Design Principles
 
