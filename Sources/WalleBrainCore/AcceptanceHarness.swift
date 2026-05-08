@@ -115,7 +115,7 @@ public enum AcceptanceHarness {
   public static func evaluateFixtureSuiteReal(
     _ suite: StructuredNoteFixtureSuite,
     dictionary: TermDictionary,
-    client: DeerAPIClient,
+    client: LLMChatClient,
     perFixtureTimeoutSeconds: Double = 45,
     maxAttempts: Int = 2,
     retryDelaySeconds: Double = 2
@@ -263,10 +263,10 @@ public enum AcceptanceHarness {
     return Dictionary(uniqueKeysWithValues: keys.map { ($0, payload.keys.contains($0)) })
   }
 
-  private static func deterministicCandidate(for fixture: StructuredNoteFixture) throws -> DeerAPIResult {
+  private static func deterministicCandidate(for fixture: StructuredNoteFixture) throws -> LLMPostProcessingResult {
     switch fixture.id {
     case "decision-action-project":
-      return DeerAPIResult(
+      return LLMPostProcessingResult(
         provider: "deterministic",
         model: "fixture",
         summary: "会议确认 Atlas 下周上线，并要求补齐发布 checklist。",
@@ -299,7 +299,7 @@ public enum AcceptanceHarness {
         ]
       )
     case "tentative-no-hallucinated-action":
-      return DeerAPIResult(
+      return LLMPostProcessingResult(
         provider: "deterministic",
         model: "fixture",
         summary: "大家提到可能下个月再看预算，但目前没有形成确定动作。",
@@ -311,7 +311,7 @@ public enum AcceptanceHarness {
         ]
       )
     case "no-action-background-only":
-      return DeerAPIResult(
+      return LLMPostProcessingResult(
         provider: "deterministic",
         model: "fixture",
         summary: "本次主要是背景交流，没有形成明确行动项。",
@@ -320,7 +320,7 @@ public enum AcceptanceHarness {
         actionItems: []
       )
     case "unresolved-project-link":
-      return DeerAPIResult(
+      return LLMPostProcessingResult(
         provider: "deterministic",
         model: "fixture",
         summary: "会议提到了 Apollo，但当前无法确认其是否对应已有项目。",
@@ -341,7 +341,7 @@ public enum AcceptanceHarness {
     }
   }
 
-  private static func evaluate(result: DeerAPIResult, against expectations: StructuredNoteExpectations) -> [String] {
+  private static func evaluate(result: LLMPostProcessingResult, against expectations: StructuredNoteExpectations) -> [String] {
     var errors: [String] = []
     let decisionText = result.decisions.map(\.text).joined(separator: "\n")
     let actionText = result.actionItems.joined(separator: "\n")
@@ -378,7 +378,7 @@ public enum AcceptanceHarness {
     return errors
   }
 
-  private static func diagnostics(from result: DeerAPIResult) -> FixtureEvaluationDiagnostics {
+  private static func diagnostics(from result: LLMPostProcessingResult) -> FixtureEvaluationDiagnostics {
     FixtureEvaluationDiagnostics(
       summary: result.summary,
       keyPoints: result.keyPoints,

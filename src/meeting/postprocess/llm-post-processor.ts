@@ -4,9 +4,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import {
-  DeerApiClient,
+  LLMChatClient,
   type ChatContentPart,
-} from "../llm/deerapi-client.js";
+} from "../llm/llm-chat-client.js";
 import type {
   MeetingSession,
   PostProcessResult,
@@ -97,8 +97,8 @@ async function buildAudioPart(session: MeetingSession): Promise<ChatContentPart 
   }
 }
 
-export class DeerApiPostProcessor implements PostProcessor {
-  private readonly client: DeerApiClient;
+export class LLMPostProcessor implements PostProcessor {
+  private readonly client: LLMChatClient;
 
   constructor(
     private readonly options: {
@@ -108,7 +108,7 @@ export class DeerApiPostProcessor implements PostProcessor {
       importantModelChain?: string[];
     },
   ) {
-    this.client = new DeerApiClient({
+    this.client = new LLMChatClient({
       baseUrl: options.baseUrl,
       apiKey: options.apiKey,
     });
@@ -180,7 +180,7 @@ export class DeerApiPostProcessor implements PostProcessor {
         const parsed = extractJson(response.content);
 
         return {
-          provider: "deerapi",
+          provider: "openai-compatible",
           model: response.model ?? model,
           transcript: String(parsed.transcript ?? transcriptSource).trim(),
           summary: String(parsed.summary ?? "").trim() || `${session.title} 的会后整理已完成。`,
@@ -195,6 +195,6 @@ export class DeerApiPostProcessor implements PostProcessor {
       }
     }
 
-    throw new Error(`All DeerAPI model attempts failed.\n${errors.join("\n")}`);
+    throw new Error(`All LLM model attempts failed.\n${errors.join("\n")}`);
   }
 }

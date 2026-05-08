@@ -6,40 +6,59 @@ struct ModelConfigurationResolverTests {
   func resolvesEnvironmentReferences() throws {
     let resolver = ModelConfigurationResolver(
       environment: [
-        "DEERAPI_BASE_URL": "https://example.com/v1",
-        "DEERAPI_KEY": "secret-key",
-        "WALLEBRAIN_MODELS": " gemini-3.1-flash, gemini-3-flash-preview , gemini-3.1-flash, gemini-2.5-flash ",
+        "WALLEBRAIN_LLM_BASE_URL": "https://example.com/v1",
+        "WALLEBRAIN_LLM_API_KEY": "secret-key",
+        "WALLEBRAIN_LLM_MODELS": " model-a, model-b , model-a, model-c ",
       ]
     )
 
     let configuration = ModelConfiguration(
-      baseURLReference: "$DEERAPI_BASE_URL",
-      apiKeyReference: "$DEERAPI_KEY",
-      modelsReference: "$WALLEBRAIN_MODELS"
+      baseURLReference: "$WALLEBRAIN_LLM_BASE_URL",
+      apiKeyReference: "$WALLEBRAIN_LLM_API_KEY",
+      modelsReference: "$WALLEBRAIN_LLM_MODELS"
     )
 
     let resolved = try resolver.resolve(configuration)
 
     #expect(resolved.baseURL == "https://example.com/v1")
     #expect(resolved.apiKey == "secret-key")
-    #expect(resolved.models == ["gemini-3.1-flash", "gemini-3-flash-preview", "gemini-2.5-flash"])
+    #expect(resolved.models == ["model-a", "model-b", "model-c"])
+    #expect(resolved.providerLabel == "OpenAI-compatible")
   }
 
   @Test
   func previewFlagsMissingEnvironmentVariable() {
     let resolver = ModelConfigurationResolver(mergedEnvironment: [:])
     let configuration = ModelConfiguration(
-      baseURLReference: "$DEERAPI_BASE_URL",
-      apiKeyReference: "$DEERAPI_KEY",
-      modelsReference: "gemini-3-flash-preview"
+      baseURLReference: "$WALLEBRAIN_LLM_BASE_URL",
+      apiKeyReference: "$WALLEBRAIN_LLM_API_KEY",
+      modelsReference: "model-a"
     )
 
     let preview = resolver.preview(for: configuration)
 
-    #expect(preview.baseURL.errorMessage == "Environment variable DEERAPI_BASE_URL is not set.")
-    #expect(preview.apiKey.errorMessage == "Environment variable DEERAPI_KEY is not set.")
+    #expect(preview.baseURL.errorMessage == "Environment variable WALLEBRAIN_LLM_BASE_URL is not set.")
+    #expect(preview.apiKey.errorMessage == "Environment variable WALLEBRAIN_LLM_API_KEY is not set.")
     #expect(preview.models.errorMessage == nil)
-    #expect(preview.resolvedModels == ["gemini-3-flash-preview"])
+    #expect(preview.providerLabel.resolvedValue == "OpenAI-compatible")
+    #expect(preview.resolvedModels == ["model-a"])
     #expect(preview.isValid == false)
+  }
+
+  @Test
+  func resolvesLegacyEnvironmentFallbacksForDefaultReferences() throws {
+    let resolver = ModelConfigurationResolver(
+      mergedEnvironment: [
+        "DEERAPI_BASE_URL": "https://legacy.example.com/v1",
+        "DEERAPI_KEY": "legacy-secret",
+        "OPENAI_MODEL": "legacy-model",
+      ]
+    )
+
+    let resolved = try resolver.resolve(ModelConfiguration())
+
+    #expect(resolved.baseURL == "https://legacy.example.com/v1")
+    #expect(resolved.apiKey == "legacy-secret")
+    #expect(resolved.models == ["legacy-model"])
   }
 }

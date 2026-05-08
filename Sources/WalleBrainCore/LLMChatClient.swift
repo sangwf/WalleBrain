@@ -1,9 +1,21 @@
 import Foundation
 
-public actor DeerAPIClient {
+public actor LLMChatClient {
+  private static let maximumRequestAttempts = 3
+  private static let retryDelays: [Duration] = [.seconds(2), .seconds(8)]
+
+  private static let urlSession: URLSession = {
+    let configuration = URLSessionConfiguration.default
+    configuration.timeoutIntervalForRequest = 900
+    configuration.timeoutIntervalForResource = 1_800
+    configuration.waitsForConnectivity = true
+    return URLSession(configuration: configuration)
+  }()
+
   private let apiKey: String
   private let completionURL: URL
   private let modelChain: [String]
+  private let providerLabel: String
 
   public init(
     environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -19,9 +31,10 @@ public actor DeerAPIClient {
     self.apiKey = resolvedConfiguration.apiKey
     self.completionURL = Self.resolveCompletionURL(from: url)
     self.modelChain = resolvedConfiguration.models
+    self.providerLabel = resolvedConfiguration.providerLabel
   }
 
-  public func summarize(transcript: String, dictionary: TermDictionary) async throws -> DeerAPIResult {
+  public func summarize(transcript: String, dictionary: TermDictionary) async throws -> LLMPostProcessingResult {
     var lastError: Error?
 
     for model in modelChain {
@@ -32,13 +45,13 @@ public actor DeerAPIClient {
       }
     }
 
-    throw lastError ?? WalleBrainError.invalidResponse("No DeerAPI model succeeded.")
+    throw lastError ?? WalleBrainError.invalidResponse("No LLM model succeeded.")
   }
 
   public func summarizeFixtureTranscript(
     _ transcript: String,
     dictionary: TermDictionary
-  ) async throws -> DeerAPIResult {
+  ) async throws -> LLMPostProcessingResult {
     var lastError: Error?
 
     for model in modelChain {
@@ -52,10 +65,10 @@ public actor DeerAPIClient {
       }
     }
 
-    throw lastError ?? WalleBrainError.invalidResponse("No DeerAPI model succeeded.")
+    throw lastError ?? WalleBrainError.invalidResponse("No LLM model succeeded.")
   }
 
-  public func testConnection() async throws -> DeerAPIResult {
+  public func testConnection() async throws -> LLMPostProcessingResult {
     try await summarize(
       transcript: "这是一次连接测试。",
       dictionary: TermDictionary(title: "Connection Test", entries: [])
@@ -84,7 +97,7 @@ public actor DeerAPIClient {
       }
     }
 
-    throw lastError ?? WalleBrainError.invalidResponse("No DeerAPI model succeeded.")
+    throw lastError ?? WalleBrainError.invalidResponse("No LLM model succeeded.")
   }
 
   public func reviseListBlock(
@@ -111,7 +124,7 @@ public actor DeerAPIClient {
       }
     }
 
-    throw lastError ?? WalleBrainError.invalidResponse("No DeerAPI model succeeded.")
+    throw lastError ?? WalleBrainError.invalidResponse("No LLM model succeeded.")
   }
 
   public func reviseDecisionsBlock(
@@ -136,14 +149,14 @@ public actor DeerAPIClient {
       }
     }
 
-    throw lastError ?? WalleBrainError.invalidResponse("No DeerAPI model succeeded.")
+    throw lastError ?? WalleBrainError.invalidResponse("No LLM model succeeded.")
   }
 
   private func summarize(
     transcript: String,
     dictionary: TermDictionary,
     model: String,
-  ) async throws -> DeerAPIResult {
+  ) async throws -> LLMPostProcessingResult {
     let glossary = glossaryText(from: dictionary)
 
     // --- Pass 1: Transcript cleanup only ---
@@ -214,7 +227,7 @@ public actor DeerAPIClient {
   private func analyzeTranscript(
     _ transcript: String,
     model: String
-  ) async throws -> DeerAPIResult {
+  ) async throws -> LLMPostProcessingResult {
     // --- Pass 2: Analysis (summary + structured meeting memory) ---
     let analysisPrompt = """
     You are preparing a Chinese meeting note from the following transcript.
@@ -324,12 +337,12 @@ public actor DeerAPIClient {
     )
 
     let jsonText = try Self.extractJSON(from: analysisContent)
-    let decoded = try JSONDecoder().decode(AnalysisEnvelope.self, from: Data(jsonText.utf8))
+    let decoded = try Self.decodeAnalysisEnvelope(from: jsonText)
 
     let filteredDecisions = filterDecisions(decoded.decisions, sourceTranscript: transcript)
 
-    return DeerAPIResult(
-      provider: "deerapi",
+    return LLMPostProcessingResult(
+      provider: providerLabel,
       model: model,
       summary: decoded.summary,
       organizedTranscript: transcript,
@@ -451,7 +464,7 @@ public actor DeerAPIClient {
     }
 
     return SummaryRevisionResult(
-      provider: "deerapi",
+      provider: providerLabel,
       model: model,
       summary: revisedSummary
     )
@@ -634,7 +647,7 @@ public actor DeerAPIClient {
     ]
 
     request.httpBody = try JSONSerialization.data(withJSONObject: body)
-    let (statusCode, data) = try Self.performDirectRequest(request)
+    let (statusCode, data) = try await Self.performRequest(request)
 
     guard (200..<300).contains(statusCode) else {
       throw WalleBrainError.invalidResponse(
@@ -663,6 +676,38 @@ public actor DeerAPIClient {
     throw WalleBrainError.invalidModelPayload
   }
 
+  private static func decodeAnalysisEnvelope(from jsonText: String) throws -> AnalysisEnvelope {
+    do {
+      return try JSONDecoder().decode(AnalysisEnvelope.self, from: Data(jsonText.utf8))
+    } catch {
+      throw WalleBrainError.invalidResponse("Analysis JSON decode failed: \(Self.describeDecodingError(error))")
+    }
+  }
+
+  private static func describeDecodingError(_ error: Error) -> String {
+    guard let decodingError = error as? DecodingError else {
+      return error.localizedDescription
+    }
+
+    func path(_ context: DecodingError.Context) -> String {
+      let value = context.codingPath.map(\.stringValue).joined(separator: ".")
+      return value.isEmpty ? "<root>" : value
+    }
+
+    switch decodingError {
+    case let .typeMismatch(type, context):
+      return "type mismatch at \(path(context)); expected \(type): \(context.debugDescription)"
+    case let .valueNotFound(type, context):
+      return "missing value at \(path(context)); expected \(type): \(context.debugDescription)"
+    case let .keyNotFound(key, context):
+      return "missing key \(key.stringValue) at \(path(context)): \(context.debugDescription)"
+    case let .dataCorrupted(context):
+      return "data corrupted at \(path(context)): \(context.debugDescription)"
+    @unknown default:
+      return error.localizedDescription
+    }
+  }
+
   private static func resolveCompletionURL(from url: URL) -> URL {
     let path = url.path.lowercased()
     if path.hasSuffix("/chat/completions") {
@@ -672,7 +717,62 @@ public actor DeerAPIClient {
     return url.appending(path: "chat/completions")
   }
 
-  private static func performDirectRequest(_ request: URLRequest) throws -> (Int, Data) {
+  private static func performRequest(_ request: URLRequest) async throws -> (Int, Data) {
+    var attemptSummaries: [String] = []
+
+    for attempt in 1...maximumRequestAttempts {
+      do {
+        let response = try await performSingleRequestAttempt(request)
+        if isTransientHTTPStatus(response.0), attempt < maximumRequestAttempts {
+          attemptSummaries.append("attempt \(attempt) returned HTTP \(response.0): \(responsePreview(from: response.1))")
+          try await sleepBeforeRetry(attempt: attempt)
+          continue
+        }
+
+        return response
+      } catch {
+        attemptSummaries.append("attempt \(attempt) failed: \(error.localizedDescription)")
+        guard attempt < maximumRequestAttempts else {
+          break
+        }
+
+        try await sleepBeforeRetry(attempt: attempt)
+      }
+    }
+
+    throw WalleBrainError.invalidResponse(
+      "All LLM request attempts failed. \(attemptSummaries.joined(separator: " | "))"
+    )
+  }
+
+  private static func performSingleRequestAttempt(_ request: URLRequest) async throws -> (Int, Data) {
+    do {
+      return try await performURLSessionRequest(request)
+    } catch let urlSessionError {
+      do {
+        return try performCurlRequest(request, bypassProxy: false)
+      } catch let curlError {
+        do {
+          return try performCurlRequest(request, bypassProxy: true)
+        } catch let directCurlError {
+          throw WalleBrainError.invalidResponse(
+            "URLSession request failed: \(urlSessionError.localizedDescription); curl fallback failed: \(curlError.localizedDescription); direct curl fallback failed: \(directCurlError.localizedDescription)"
+          )
+        }
+      }
+    }
+  }
+
+  private static func performURLSessionRequest(_ request: URLRequest) async throws -> (Int, Data) {
+    let (data, response) = try await urlSession.data(for: request)
+    guard let httpResponse = response as? HTTPURLResponse else {
+      throw WalleBrainError.invalidResponse("Missing HTTP response.")
+    }
+
+    return (httpResponse.statusCode, data)
+  }
+
+  private static func performCurlRequest(_ request: URLRequest, bypassProxy: Bool) throws -> (Int, Data) {
     guard let url = request.url else {
       throw WalleBrainError.invalidResponse("Missing request URL.")
     }
@@ -682,8 +782,7 @@ public actor DeerAPIClient {
 
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-    process.arguments = [
-      "--noproxy", "*",
+    var arguments = [
       "-sS",
       "--max-time", "1800",
       "-X", request.httpMethod ?? "POST",
@@ -693,6 +792,10 @@ public actor DeerAPIClient {
       url.absoluteString,
       "--data-binary", "@-",
     ]
+    if bypassProxy {
+      arguments.insert(contentsOf: ["--noproxy", "*"], at: 0)
+    }
+    process.arguments = arguments
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
@@ -728,6 +831,29 @@ public actor DeerAPIClient {
     }
 
     return (statusCode, Data(bodyText.utf8))
+  }
+
+  private static func isTransientHTTPStatus(_ statusCode: Int) -> Bool {
+    statusCode == 408
+      || statusCode == 409
+      || statusCode == 425
+      || statusCode == 429
+      || (500..<600).contains(statusCode)
+  }
+
+  private static func sleepBeforeRetry(attempt: Int) async throws {
+    let index = max(0, min(attempt - 1, retryDelays.count - 1))
+    try await Task.sleep(for: retryDelays[index])
+  }
+
+  private static func responsePreview(from data: Data) -> String {
+    let text = String(decoding: data, as: UTF8.self)
+      .replacingOccurrences(of: "\n", with: " ")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard text.count > 240 else {
+      return text
+    }
+    return String(text.prefix(240)) + "..."
   }
 
   private func filterDecisions(
@@ -806,15 +932,15 @@ private struct AnalysisEnvelope: Decodable {
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    summary = try container.decode(String.self, forKey: .summary)
-    keyPoints = try container.decodeIfPresent([String].self, forKey: .keyPoints) ?? []
-    actionItems = try container.decodeIfPresent([String].self, forKey: .actionItems) ?? []
-    decisions = try container.decodeIfPresent([DecisionEnvelope].self, forKey: .decisions) ?? []
-    openLoops = try container.decodeIfPresent([OpenLoopEnvelope].self, forKey: .openLoops) ?? []
-    risks = try container.decodeIfPresent([RiskEnvelope].self, forKey: .risks) ?? []
-    participantPositions = try container.decodeIfPresent([ParticipantPositionEnvelope].self, forKey: .participantPositions) ?? []
-    projectLinks = try container.decodeIfPresent([ProjectLinkEnvelope].self, forKey: .projectLinks) ?? []
-    relatedPeople = try container.decodeIfPresent([PersonEnvelope].self, forKey: .relatedPeople) ?? []
+    summary = try container.decodeRequiredLossyString(forKey: .summary)
+    keyPoints = try container.decodeLossyStringArray(forKey: .keyPoints)
+    actionItems = try container.decodeLossyStringArray(forKey: .actionItems)
+    decisions = try container.decodeLossyArray(DecisionEnvelope.self, forKey: .decisions)
+    openLoops = try container.decodeLossyArray(OpenLoopEnvelope.self, forKey: .openLoops)
+    risks = try container.decodeLossyArray(RiskEnvelope.self, forKey: .risks)
+    participantPositions = try container.decodeLossyArray(ParticipantPositionEnvelope.self, forKey: .participantPositions)
+    projectLinks = try container.decodeLossyArray(ProjectLinkEnvelope.self, forKey: .projectLinks)
+    relatedPeople = try container.decodeLossyArray(PersonEnvelope.self, forKey: .relatedPeople)
   }
 }
 
@@ -843,11 +969,11 @@ private struct DecisionEnvelope: Decodable {
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    text = try container.decode(String.self, forKey: .text)
-    status = try container.decodeIfPresent(DecisionStatus.self, forKey: .status) ?? .candidate
+    text = try container.decodeRequiredLossyString(forKey: .text)
+    status = container.decodeLossyRawValue(DecisionStatus.self, forKey: .status) ?? .candidate
     confidence = try container.decodeLossyDouble(forKey: .confidence) ?? 0.5
-    relatedProjectID = try container.decodeIfPresent(String.self, forKey: .relatedProjectID)
-    evidence = try container.decodeIfPresent(String.self, forKey: .evidence)
+    relatedProjectID = try container.decodeLossyOptionalString(forKey: .relatedProjectID)
+    evidence = try container.decodeLossyOptionalString(forKey: .evidence)
   }
 }
 
@@ -872,13 +998,13 @@ private struct OpenLoopEnvelope: Decodable {
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    type = try container.decodeIfPresent(OpenLoopType.self, forKey: .type) ?? .followUp
-    text = try container.decode(String.self, forKey: .text)
-    owner = try container.decodeIfPresent(String.self, forKey: .owner)
-    dueHint = try container.decodeIfPresent(String.self, forKey: .dueHint)
-    status = try container.decodeIfPresent(OpenLoopStatus.self, forKey: .status) ?? .open
-    relatedProjectID = try container.decodeIfPresent(String.self, forKey: .relatedProjectID)
-    evidence = try container.decodeIfPresent(String.self, forKey: .evidence)
+    type = container.decodeLossyRawValue(OpenLoopType.self, forKey: .type) ?? .followUp
+    text = try container.decodeRequiredLossyString(forKey: .text)
+    owner = try container.decodeLossyOptionalString(forKey: .owner)
+    dueHint = try container.decodeLossyOptionalString(forKey: .dueHint)
+    status = container.decodeLossyRawValue(OpenLoopStatus.self, forKey: .status) ?? .open
+    relatedProjectID = try container.decodeLossyOptionalString(forKey: .relatedProjectID)
+    evidence = try container.decodeLossyOptionalString(forKey: .evidence)
   }
 }
 
@@ -897,10 +1023,10 @@ private struct RiskEnvelope: Decodable {
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    text = try container.decode(String.self, forKey: .text)
+    text = try container.decodeRequiredLossyString(forKey: .text)
     confidence = try container.decodeLossyDouble(forKey: .confidence) ?? 0.5
-    relatedProjectID = try container.decodeIfPresent(String.self, forKey: .relatedProjectID)
-    evidence = try container.decodeIfPresent(String.self, forKey: .evidence)
+    relatedProjectID = try container.decodeLossyOptionalString(forKey: .relatedProjectID)
+    evidence = try container.decodeLossyOptionalString(forKey: .evidence)
   }
 }
 
@@ -922,10 +1048,10 @@ private struct ParticipantPositionEnvelope: Decodable {
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     person = try container.decodeIfPresent(PersonEnvelope.self, forKey: .person)
-    label = try container.decodeIfPresent(String.self, forKey: .label) ?? person?.displayName ?? "参与者"
-    stance = try container.decode(String.self, forKey: .stance)
+    label = (try container.decodeLossyOptionalString(forKey: .label)) ?? person?.displayName ?? "参与者"
+    stance = try container.decodeRequiredLossyString(forKey: .stance)
     confidence = try container.decodeLossyDouble(forKey: .confidence) ?? 0.5
-    evidence = try container.decodeIfPresent(String.self, forKey: .evidence)
+    evidence = try container.decodeLossyOptionalString(forKey: .evidence)
   }
 }
 
@@ -947,10 +1073,10 @@ private struct ProjectLinkEnvelope: Decodable {
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     project = try container.decode(ProjectEnvelope.self, forKey: .project)
-    role = try container.decodeIfPresent(ProjectLinkRole.self, forKey: .role) ?? .mentioned
-    status = try container.decodeIfPresent(ProjectLinkStatus.self, forKey: .status) ?? .unresolved
+    role = container.decodeLossyRawValue(ProjectLinkRole.self, forKey: .role) ?? .mentioned
+    status = container.decodeLossyRawValue(ProjectLinkStatus.self, forKey: .status) ?? .unresolved
     confidence = try container.decodeLossyDouble(forKey: .confidence) ?? 0.5
-    evidence = try container.decodeIfPresent(String.self, forKey: .evidence)
+    evidence = try container.decodeLossyOptionalString(forKey: .evidence)
   }
 }
 
@@ -962,18 +1088,30 @@ private struct ProjectEnvelope: Decodable {
   private enum CodingKeys: String, CodingKey {
     case id
     case title
+    case name
     case aliases
   }
 
   init(from decoder: Decoder) throws {
+    if let direct = try? LossyString(from: decoder), !direct.value.isEmpty {
+      title = direct.value
+      id = Self.slug(from: direct.value)
+      aliases = []
+      return
+    }
+
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    title = try container.decode(String.self, forKey: .title)
-    id = try container.decodeIfPresent(String.self, forKey: .id) ?? title
+    title = try container.decodeFirstRequiredLossyString(forKeys: [.title, .name, .id])
+    id = (try container.decodeLossyOptionalString(forKey: .id)) ?? Self.slug(from: title)
+    aliases = try container.decodeLossyStringArray(forKey: .aliases)
+  }
+
+  private static func slug(from value: String) -> String {
+    value
       .lowercased()
       .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
       .map(String.init)
       .joined(separator: "-")
-    aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
   }
 }
 
@@ -985,18 +1123,31 @@ private struct PersonEnvelope: Decodable {
   private enum CodingKeys: String, CodingKey {
     case id
     case displayName
+    case name
+    case title
     case aliases
   }
 
   init(from decoder: Decoder) throws {
+    if let direct = try? LossyString(from: decoder), !direct.value.isEmpty {
+      displayName = direct.value
+      id = Self.slug(from: direct.value)
+      aliases = []
+      return
+    }
+
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    displayName = try container.decode(String.self, forKey: .displayName)
-    id = try container.decodeIfPresent(String.self, forKey: .id) ?? displayName
+    displayName = try container.decodeFirstRequiredLossyString(forKeys: [.displayName, .name, .title, .id])
+    id = (try container.decodeLossyOptionalString(forKey: .id)) ?? Self.slug(from: displayName)
+    aliases = try container.decodeLossyStringArray(forKey: .aliases)
+  }
+
+  private static func slug(from value: String) -> String {
+    value
       .lowercased()
       .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
       .map(String.init)
       .joined(separator: "-")
-    aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
   }
 }
 
@@ -1007,19 +1158,165 @@ private extension String {
 }
 
 private extension KeyedDecodingContainer {
-  func decodeLossyDouble(forKey key: Key) throws -> Double? {
-    if let value = try decodeIfPresent(Double.self, forKey: key) {
+  func decodeLossyArray<Value: Decodable>(_ type: Value.Type, forKey key: Key) throws -> [Value] {
+    if let wrapped = try? decodeIfPresent(LossyDecodableArray<Value>.self, forKey: key) {
+      return wrapped.elements
+    }
+
+    if let value = try? decodeIfPresent(Value.self, forKey: key) {
+      return [value]
+    }
+
+    return []
+  }
+
+  func decodeLossyStringArray(forKey key: Key) throws -> [String] {
+    try decodeLossyArray(LossyString.self, forKey: key)
+      .map(\.value)
+      .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+  }
+
+  func decodeLossyOptionalString(forKey key: Key) throws -> String? {
+    guard let value = try? decodeIfPresent(LossyString.self, forKey: key)?.value else {
+      return nil
+    }
+
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
+  func decodeRequiredLossyString(forKey key: Key) throws -> String {
+    if let value = try decodeLossyOptionalString(forKey: key) {
       return value
     }
 
-    if let value = try decodeIfPresent(Int.self, forKey: key) {
+    throw DecodingError.valueNotFound(
+      String.self,
+      DecodingError.Context(
+        codingPath: codingPath + [key],
+        debugDescription: "Expected a non-empty string-compatible value."
+      )
+    )
+  }
+
+  func decodeFirstRequiredLossyString(forKeys keys: [Key]) throws -> String {
+    for key in keys {
+      if let value = try decodeLossyOptionalString(forKey: key) {
+        return value
+      }
+    }
+
+    var path = codingPath
+    if let firstKey = keys.first {
+      path.append(firstKey)
+    }
+
+    throw DecodingError.valueNotFound(
+      String.self,
+      DecodingError.Context(
+        codingPath: path,
+        debugDescription: "Expected one of \(keys.map(\.stringValue).joined(separator: ", ")) to contain a string-compatible value."
+      )
+    )
+  }
+
+  func decodeLossyRawValue<Value: RawRepresentable>(_ type: Value.Type, forKey key: Key) -> Value? where Value.RawValue == String {
+    guard let rawValue = try? decodeLossyOptionalString(forKey: key) else {
+      return nil
+    }
+
+    return Value(rawValue: rawValue)
+  }
+
+  func decodeLossyDouble(forKey key: Key) throws -> Double? {
+    if let value = try? decodeIfPresent(Double.self, forKey: key) {
+      return value
+    }
+
+    if let value = try? decodeIfPresent(Int.self, forKey: key) {
       return Double(value)
     }
 
-    if let value = try decodeIfPresent(String.self, forKey: key) {
+    if let value = try? decodeIfPresent(String.self, forKey: key) {
       return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     return nil
+  }
+}
+
+private struct LossyDecodableArray<Element: Decodable>: Decodable {
+  let elements: [Element]
+
+  init(from decoder: Decoder) throws {
+    var container = try decoder.unkeyedContainer()
+    var elements: [Element] = []
+
+    while !container.isAtEnd {
+      if let element = try? container.decode(Element.self) {
+        elements.append(element)
+      } else {
+        _ = try? container.decode(DiscardedDecodableValue.self)
+      }
+    }
+
+    self.elements = elements
+  }
+}
+
+private struct LossyString: Decodable {
+  let value: String
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    if let value = try? container.decode(String.self) {
+      self.value = value
+    } else if let value = try? container.decode(Int.self) {
+      self.value = String(value)
+    } else if let value = try? container.decode(Double.self) {
+      self.value = String(value)
+    } else if let value = try? container.decode(Bool.self) {
+      self.value = String(value)
+    } else {
+      throw DecodingError.typeMismatch(
+        String.self,
+        DecodingError.Context(
+          codingPath: decoder.codingPath,
+          debugDescription: "Expected a scalar string-compatible value."
+        )
+      )
+    }
+  }
+}
+
+private struct DiscardedDecodableValue: Decodable {
+  init(from decoder: Decoder) throws {
+    if var container = try? decoder.unkeyedContainer() {
+      while !container.isAtEnd {
+        _ = try? container.decode(DiscardedDecodableValue.self)
+      }
+      return
+    }
+
+    if let container = try? decoder.container(keyedBy: DynamicCodingKey.self) {
+      for key in container.allKeys {
+        _ = try? container.decode(DiscardedDecodableValue.self, forKey: key)
+      }
+    }
+  }
+}
+
+private struct DynamicCodingKey: CodingKey {
+  let stringValue: String
+  let intValue: Int?
+
+  init?(stringValue: String) {
+    self.stringValue = stringValue
+    self.intValue = nil
+  }
+
+  init?(intValue: Int) {
+    self.stringValue = String(intValue)
+    self.intValue = intValue
   }
 }
