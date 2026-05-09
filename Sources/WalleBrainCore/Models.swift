@@ -408,6 +408,20 @@ public enum MeetingMode: String, Codable, Sendable, Hashable, CaseIterable {
   case important
 }
 
+public enum TranscriptionQualityMode: String, Codable, Sendable, Hashable, CaseIterable {
+  case local
+  case highQuality
+
+  public var displayName: String {
+    switch self {
+    case .local:
+      return "Local"
+    case .highQuality:
+      return "High Quality"
+    }
+  }
+}
+
 public enum MeetingStatus: String, Codable, Sendable, Hashable {
   case idle
   case preparing
@@ -438,6 +452,25 @@ public struct AudioInputDevice: Identifiable, Codable, Sendable, Hashable {
   public init(id: String, name: String) {
     self.id = id
     self.name = name
+  }
+}
+
+public struct AudioLevelSnapshot: Sendable, Hashable {
+  public let rmsLevel: Double
+  public let peakLevel: Double
+  public let isReceivingAudio: Bool
+  public let updatedAt: Date
+
+  public init(
+    rmsLevel: Double,
+    peakLevel: Double,
+    isReceivingAudio: Bool,
+    updatedAt: Date = Date()
+  ) {
+    self.rmsLevel = rmsLevel
+    self.peakLevel = peakLevel
+    self.isReceivingAudio = isReceivingAudio
+    self.updatedAt = updatedAt
   }
 }
 
@@ -495,6 +528,8 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
   public var exportedNotePath: String?
   public var provider: String?
   public var model: String?
+  public var transcriptionProvider: String?
+  public var transcriptionModel: String?
   public var liveTranscript: String
   public var correctedTranscript: String?
   public var transcriptChunks: [TranscriptChunk]
@@ -528,6 +563,8 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
     exportedNotePath: String? = nil,
     provider: String? = nil,
     model: String? = nil,
+    transcriptionProvider: String? = nil,
+    transcriptionModel: String? = nil,
     liveTranscript: String = "",
     correctedTranscript: String? = nil,
     transcriptChunks: [TranscriptChunk] = [],
@@ -560,6 +597,8 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
     self.exportedNotePath = exportedNotePath
     self.provider = provider
     self.model = model
+    self.transcriptionProvider = transcriptionProvider
+    self.transcriptionModel = transcriptionModel
     self.liveTranscript = liveTranscript
     self.correctedTranscript = correctedTranscript
     self.transcriptChunks = transcriptChunks

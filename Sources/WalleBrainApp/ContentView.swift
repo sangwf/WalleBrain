@@ -427,25 +427,39 @@ private struct MeetingWorkspaceView: View {
   }
 
   private var controlStrip: some View {
+    ViewThatFits(in: .horizontal) {
+      wideControlStrip
+      compactControlStrip
+    }
+    .padding(.horizontal, 18)
+    .padding(.vertical, 18)
+    .background(Color.secondary.opacity(0.06))
+    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+  }
+
+  private var wideControlStrip: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      inputControlRow(pickerWidth: 300)
+      HStack(alignment: .center, spacing: 16) {
+        transcriptionControlRow(statusWidth: 90)
+        Spacer(minLength: 12)
+        actionButtons
+      }
+    }
+  }
+
+  private var compactControlStrip: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      inputControlRow(pickerWidth: 260)
+      HStack(alignment: .center, spacing: 12) {
+        transcriptionControlRow(statusWidth: 74)
+        actionButtons
+      }
+    }
+  }
+
+  private var actionButtons: some View {
     HStack(spacing: 12) {
-      Picker("Input", selection: $model.selectedInputID) {
-        ForEach(model.availableInputs) { input in
-          Text(input.name).tag(Optional(input.id))
-        }
-      }
-      .labelsHidden()
-      .frame(maxWidth: 420)
-
-      Button {
-        model.refreshAudioInputs()
-      } label: {
-        Image(systemName: "arrow.clockwise")
-          .font(.body.weight(.medium))
-      }
-      .buttonStyle(.plain)
-
-      Spacer(minLength: 12)
-
       Button("Start Meeting") {
         Task {
           await model.startMeeting()
@@ -462,9 +476,97 @@ private struct MeetingWorkspaceView: View {
       .buttonStyle(.bordered)
       .disabled(!model.canStopMeeting)
     }
-    .padding(18)
-    .background(Color.secondary.opacity(0.06))
-    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .fixedSize(horizontal: true, vertical: false)
+    .layoutPriority(2)
+  }
+
+  private func inputControlRow(pickerWidth: CGFloat) -> some View {
+    HStack(spacing: 12) {
+      controlLabel("Input")
+
+      HStack(spacing: 8) {
+        Picker("Input", selection: $model.selectedInputID) {
+          ForEach(model.availableInputs) { input in
+            Text(input.name).tag(Optional(input.id))
+          }
+        }
+        .labelsHidden()
+        .frame(width: pickerWidth)
+
+        Button {
+          model.refreshAudioInputs()
+        } label: {
+          Image(systemName: "arrow.clockwise")
+            .font(.body.weight(.medium))
+        }
+        .buttonStyle(.plain)
+        .frame(width: 28, height: 28)
+        .help("Refresh audio inputs")
+
+        audioMeterView
+      }
+    }
+  }
+
+  private func transcriptionControlRow(statusWidth: CGFloat) -> some View {
+    HStack(spacing: 12) {
+      controlLabel("Transcription")
+
+      Picker("Transcription", selection: $model.transcriptionQualityMode) {
+        Text("Local").tag(TranscriptionQualityMode.local)
+        Text("High Quality").tag(TranscriptionQualityMode.highQuality)
+          .disabled(!model.canUseHighQualityTranscription)
+      }
+      .labelsHidden()
+      .pickerStyle(.segmented)
+      .frame(width: 260)
+      .disabled(model.currentSession?.status == .recording || model.currentSession?.status == .processing)
+
+      Text(model.highQualityTranscriptionStatusText)
+        .font(.caption)
+        .foregroundStyle(model.canUseHighQualityTranscription || model.effectiveTranscriptionQualityMode == .local ? Color.secondary : Color.red)
+        .lineLimit(1)
+        .frame(width: statusWidth, alignment: .leading)
+        .help(model.highQualityTranscriptionDetailText)
+    }
+  }
+
+  private func controlLabel(_ title: String) -> some View {
+    Text(title)
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(.secondary)
+      .textCase(.uppercase)
+      .frame(width: 96, alignment: .leading)
+  }
+
+  private var audioMeterView: some View {
+    HStack(alignment: .lastTextBaseline, spacing: 6) {
+      HStack(alignment: .bottom, spacing: 4) {
+        ForEach(0 ..< 5, id: \.self) { index in
+          Capsule()
+            .fill(audioMeterBarIsActive(index) ? Color.accentColor : Color.secondary.opacity(0.18))
+            .frame(width: 5, height: CGFloat(8 + index * 4))
+        }
+      }
+      .frame(width: 44, height: 24, alignment: .bottom)
+      .alignmentGuide(.lastTextBaseline) { dimension in
+        dimension[VerticalAlignment.bottom]
+      }
+
+      Text(model.audioInputStatusText)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(model.isReceivingAudio ? Color.accentColor : Color.secondary)
+        .lineLimit(1)
+        .frame(width: 42, alignment: .leading)
+    }
+    .help("Input audio level")
+  }
+
+  private func audioMeterBarIsActive(_ index: Int) -> Bool {
+    guard model.currentSession?.status == .recording else {
+      return false
+    }
+    return model.normalizedAudioMeterLevel >= Double(index + 1) / 5
   }
 
   private var transcriptSection: some View {
@@ -476,7 +578,7 @@ private struct MeetingWorkspaceView: View {
         Button {
           copyTranscript()
         } label: {
-          Label(didCopyTranscript ? "Copied" : "Copy Transcript", systemImage: didCopyTranscript ? "checkmark" : "doc.on.doc")
+          Label(didCopyTranscript ? "Copied" : "Copy", systemImage: didCopyTranscript ? "checkmark" : "doc.on.doc")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -493,7 +595,7 @@ private struct MeetingWorkspaceView: View {
         if model.isManualTranscriptEditable {
           manualTranscriptEditor
         } else if transcriptText.isEmpty {
-          Text("Live transcript will appear here after the meeting starts.")
+          Text(emptyTranscriptPlaceholder)
             .font(.system(size: 22, weight: .regular, design: .rounded))
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -618,7 +720,7 @@ private struct MeetingWorkspaceView: View {
         Button {
           copyStructuredNotes()
         } label: {
-          Label(didCopyStructuredNotes ? "Copied" : "Copy Notes", systemImage: didCopyStructuredNotes ? "checkmark" : "doc.on.doc")
+          Label(didCopyStructuredNotes ? "Copied" : "Copy", systemImage: didCopyStructuredNotes ? "checkmark" : "doc.on.doc")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -755,6 +857,22 @@ private struct MeetingWorkspaceView: View {
     return source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
       ? source
       : ""
+  }
+
+  private var emptyTranscriptPlaceholder: String {
+    if model.currentSession == nil, !model.statusMessage.isEmpty, model.statusMessage != "Idle" {
+      return model.statusMessage
+    }
+
+    guard model.currentSession?.status == .recording else {
+      return "Live transcript will appear here after the meeting starts."
+    }
+
+    if model.currentSession?.transcriptionProvider == RealtimeTranscriptionConfiguration.defaultProvider {
+      return "Waiting for completed speech segments from High Quality transcription..."
+    }
+
+    return "Listening for speech..."
   }
 
   private var organizedTranscriptText: String {
@@ -1135,6 +1253,61 @@ private struct SettingsSheetView: View {
           .font(.headline)
       }
 
+      GroupBox {
+        VStack(alignment: .leading, spacing: 14) {
+          HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+              Text("Provider")
+                .font(.headline)
+              Text(model.realtimeTranscriptionConfigurationPreview.provider)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 4) {
+              Text("Model")
+                .font(.headline)
+              Text(model.realtimeTranscriptionConfigurationPreview.model)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+            }
+            .frame(width: 240, alignment: .leading)
+          }
+
+          configurationField(
+            title: "Realtime API Key",
+            text: .constant("$OPENAI_API_KEY"),
+            preview: model.realtimeTranscriptionConfigurationPreview.apiKey,
+            masksResolvedValue: true
+          )
+
+          HStack(spacing: 12) {
+            Button("Test Realtime") {
+              Task {
+                await model.testRealtimeTranscriptionConfiguration()
+              }
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.isTestingRealtimeTranscriptionConfiguration || !model.realtimeTranscriptionConfigurationPreview.isValid)
+
+            if model.isTestingRealtimeTranscriptionConfiguration {
+              ProgressView()
+                .controlSize(.small)
+            }
+
+            Text(model.realtimeTranscriptionStatusMessage.isEmpty ? "High Quality sends live meeting audio to OpenAI. Local keeps live transcription on Apple Speech." : model.realtimeTranscriptionStatusMessage)
+              .font(.caption)
+              .foregroundStyle(model.realtimeTranscriptionConfigurationPreview.isValid ? Color.secondary : Color.red)
+          }
+        }
+        .padding(8)
+      } label: {
+        Text("Realtime Transcription")
+          .font(.headline)
+      }
+
       HStack(spacing: 12) {
         Button("Test Connection") {
           Task {
@@ -1164,7 +1337,7 @@ private struct SettingsSheetView: View {
       Spacer()
     }
     .padding(24)
-    .frame(minWidth: 680, minHeight: 520, alignment: .topLeading)
+    .frame(minWidth: 680, minHeight: 650, alignment: .topLeading)
   }
 
   @ViewBuilder
@@ -1174,18 +1347,22 @@ private struct SettingsSheetView: View {
     preview: ResolvedConfigurationValue,
     masksResolvedValue: Bool
   ) -> some View {
+    let isReadOnly = title == "Realtime API Key"
+
     VStack(alignment: .leading, spacing: 8) {
       Text(title)
         .font(.headline)
 
-      if title == "API Key" {
+      if title == "API Key" || title == "Realtime API Key" {
         HStack(spacing: 8) {
           if revealsAPIKey {
             TextField(title, text: text)
               .textFieldStyle(.roundedBorder)
+              .disabled(isReadOnly)
           } else {
             SecureField(title, text: text)
               .textFieldStyle(.roundedBorder)
+              .disabled(isReadOnly)
           }
 
           Button {

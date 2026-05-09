@@ -19,7 +19,7 @@ final class AppModel: ObservableObject {
   @Published var statusMessage = "Idle"
   @Published var lastExportPath = ""
   @Published var lastAssetsPath = ""
-  @Published var meetingTitle = "产品讨论会"
+  @Published var meetingTitle = ""
   @Published var selectedMode: MeetingMode = .normal
   @Published var availableInputs: [AudioInputDevice] = []
   @Published var selectedInputID: String?
@@ -35,8 +35,19 @@ final class AppModel: ObservableObject {
   @Published var modelProviderLabelReference = ModelConfiguration.defaultProviderLabelReference
   @Published var modelConfigurationStatusMessage = ""
   @Published var isTestingModelConfiguration = false
+  @Published var realtimeTranscriptionStatusMessage = ""
+  @Published var isTestingRealtimeTranscriptionConfiguration = false
+  @Published var audioLevel: Double = 0
+  @Published var audioPeakLevel: Double = 0
+  @Published var isReceivingAudio = false
+  @Published var transcriptionQualityMode: TranscriptionQualityMode = .local {
+    didSet {
+      UserDefaults.standard.set(transcriptionQualityMode.rawValue, forKey: Self.transcriptionQualityModeDefaultsKey)
+    }
+  }
 
   private let paths = RuntimePaths()
+  private static let transcriptionQualityModeDefaultsKey = "WalleBrain.TranscriptionQualityMode"
   private var liveCoordinator: LiveMeetingCoordinator
   private var activeLiveSessionID: UUID?
   private var selectedSessionID: UUID?
@@ -46,43 +57,59 @@ final class AppModel: ObservableObject {
   private var manualTranscriptSaveVersion = 0
 
   init() {
+    meetingTitle = Self.defaultMeetingTitle()
+    transcriptionQualityMode = TranscriptionQualityMode(
+      rawValue: UserDefaults.standard.string(forKey: Self.transcriptionQualityModeDefaultsKey) ?? ""
+    ) ?? .local
     liveCoordinator = LiveMeetingCoordinator(paths: paths) { _ in }
-    liveCoordinator = LiveMeetingCoordinator(paths: paths) { [weak self] session in
-      await MainActor.run {
-        guard let self else {
-          return
-        }
+    liveCoordinator = LiveMeetingCoordinator(
+      paths: paths,
+      onUpdate: { [weak self] session in
+        await MainActor.run {
+          guard let self else {
+            return
+          }
 
-        var updatedSession = session
-        if
-          updatedSession.status == .recording,
-          AudioInputCatalog.isManualInput(id: updatedSession.selectedInput?.id ?? "")
-        {
-          updatedSession.liveTranscript = self.manualTranscriptDraft
-          updatedSession.transcriptChunks = Self.manualTranscriptChunks(for: self.manualTranscriptDraft)
-        }
+          var updatedSession = session
+          if
+            updatedSession.status == .recording,
+            AudioInputCatalog.isManualInput(id: updatedSession.selectedInput?.id ?? "")
+          {
+            updatedSession.liveTranscript = self.manualTranscriptDraft
+            updatedSession.transcriptChunks = Self.manualTranscriptChunks(for: self.manualTranscriptDraft)
+          }
 
-        let shouldSelectLiveSession = [.preparing, .recording].contains(session.status)
-        if shouldSelectLiveSession {
-          self.activeLiveSessionID = updatedSession.id
-          self.selectedSessionID = updatedSession.id
-        } else if self.activeLiveSessionID == updatedSession.id {
-          self.activeLiveSessionID = nil
-        }
+          let shouldSelectLiveSession = [.preparing, .recording].contains(session.status)
+          if shouldSelectLiveSession {
+            self.activeLiveSessionID = updatedSession.id
+            self.selectedSessionID = updatedSession.id
+          } else if self.activeLiveSessionID == updatedSession.id {
+            self.activeLiveSessionID = nil
+            self.resetAudioLevel()
+          }
 
-        if shouldSelectLiveSession || self.selectedSessionID == updatedSession.id {
-          self.currentSession = updatedSession
+          if shouldSelectLiveSession || self.selectedSessionID == updatedSession.id {
+            self.currentSession = updatedSession
+          }
+          self.lastExportPath = updatedSession.exportedNotePath ?? self.lastExportPath
+          self.upsertRecentSession(updatedSession)
         }
-        self.lastExportPath = updatedSession.exportedNotePath ?? self.lastExportPath
-        self.upsertRecentSession(updatedSession)
+      },
+      onAudioLevel: { [weak self] snapshot in
+        await MainActor.run {
+          self?.audioLevel = snapshot.rmsLevel
+          self?.audioPeakLevel = snapshot.peakLevel
+          self?.isReceivingAudio = snapshot.isReceivingAudio
+        }
       }
-    }
+    )
   }
 
   func bootstrap() async {
     await loadDictionary()
     loadModelConfiguration()
     refreshAudioInputs()
+    await recoverInterruptedSessions()
     await loadRecentSessions()
     if currentSession == nil {
       prepareNewMeetingDraft()
@@ -90,6 +117,29 @@ final class AppModel: ObservableObject {
       selectedInputID = preferredUsableInput(from: availableInputs)?.id
     }
     await runLaunchSmokeIfRequested()
+  }
+
+  private func recoverInterruptedSessions() async {
+    do {
+      let store = MeetingSessionStore(paths: paths)
+      let sessions = try await store.listSessions()
+      var recoveredCount = 0
+
+      for var session in sessions where [.preparing, .recording, .processing].contains(session.status) {
+        let originalStatus = session.status
+        session.status = .failed
+        session.endedAt = session.endedAt ?? Date()
+        session.errorMessage = Self.interruptedSessionMessage(for: originalStatus)
+        try await store.save(session)
+        recoveredCount += 1
+      }
+
+      if recoveredCount > 0 {
+        statusMessage = "Recovered \(recoveredCount) interrupted meeting\(recoveredCount == 1 ? "" : "s")."
+      }
+    } catch {
+      statusMessage = error.localizedDescription
+    }
   }
 
   func refreshAudioInputs() {
@@ -171,6 +221,23 @@ final class AppModel: ObservableObject {
       modelConfigurationStatusMessage = "Connected via \(result.model)"
     } catch {
       modelConfigurationStatusMessage = error.localizedDescription
+    }
+  }
+
+  func testRealtimeTranscriptionConfiguration() async {
+    guard !isTestingRealtimeTranscriptionConfiguration else {
+      return
+    }
+
+    isTestingRealtimeTranscriptionConfiguration = true
+    defer { isTestingRealtimeTranscriptionConfiguration = false }
+
+    do {
+      let configuration = try RealtimeTranscriptionConfigurationResolver().resolve()
+      let model = try await OpenAIRealtimeTranscriptionClient.testConnection(configuration: configuration)
+      realtimeTranscriptionStatusMessage = "Connected via \(model)"
+    } catch {
+      realtimeTranscriptionStatusMessage = error.localizedDescription
     }
   }
 
@@ -309,7 +376,7 @@ final class AppModel: ObservableObject {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "zh_CN")
     formatter.dateFormat = "HH:mm:ss"
-    meetingTitle = "会议记录 \(formatter.string(from: Date()))"
+    meetingTitle = Self.defaultMeetingTitle()
     selectedInputID = preferredUsableInput(from: availableInputs)?.id
     await startMeeting()
   }
@@ -321,12 +388,14 @@ final class AppModel: ObservableObject {
 
     isMeetingActionInFlight = true
     defer { isMeetingActionInFlight = false }
+    resetAudioLevel()
 
     do {
       try await liveCoordinator.startMeeting(
         title: meetingTitle,
         mode: selectedMode,
-        preferredInputID: selectedInputID
+        preferredInputID: selectedInputID,
+        transcriptionMode: effectiveTranscriptionQualityMode
       )
     } catch {
       handleMeetingStartError(error)
@@ -349,6 +418,7 @@ final class AppModel: ObservableObject {
         try await liveCoordinator.updateManualTranscript(manualTranscriptDraft)
       }
       try await liveCoordinator.stopMeetingAndProcess()
+      resetAudioLevel()
       if let session = currentSession, session.status == .processing {
         upsertRecentSession(session)
         statusMessage = "Processing \(session.title) in background."
@@ -595,6 +665,9 @@ final class AppModel: ObservableObject {
     guard !isMeetingActionInFlight else {
       return false
     }
+    if effectiveTranscriptionQualityMode == .highQuality && !realtimeTranscriptionConfigurationPreview.isValid {
+      return false
+    }
     return activeLiveSessionID == nil
   }
 
@@ -623,6 +696,17 @@ final class AppModel: ObservableObject {
     }
   }
 
+  private static func interruptedSessionMessage(for status: MeetingStatus) -> String {
+    switch status {
+    case .preparing, .recording:
+      return "WalleBrain quit before this meeting was stopped. The partial transcript and audio were preserved."
+    case .processing:
+      return "WalleBrain quit while AI post-processing was running. The transcript was preserved; use Retry AI to regenerate notes."
+    case .idle, .exported, .failed:
+      return "WalleBrain quit before this meeting completed."
+    }
+  }
+
   private func applySession(_ session: NativeMeetingSession) {
     manualTranscriptSaveVersion += 1
     manualTranscriptSaveTask?.cancel()
@@ -647,17 +731,31 @@ final class AppModel: ObservableObject {
     manualTranscriptSaveTask?.cancel()
     currentSession = nil
     selectedSessionID = nil
-    meetingTitle = "产品讨论会"
+    meetingTitle = Self.defaultMeetingTitle()
     selectedMode = .normal
     manualTranscriptDraft = ""
     draftCorrections = []
     saveDraftCorrectionsToMemory = false
     selectedInputID = preferredUsableInput(from: availableInputs)?.id
+    resetAudioLevel()
+  }
+
+  private func resetAudioLevel() {
+    audioLevel = 0
+    audioPeakLevel = 0
+    isReceivingAudio = false
   }
 
   private func normalizedMeetingTitle(from rawTitle: String) -> String {
     let trimmed = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? "会议记录" : trimmed
+    return trimmed.isEmpty ? Self.defaultMeetingTitle() : trimmed
+  }
+
+  private static func defaultMeetingTitle(date: Date = Date()) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.dateFormat = "HH:mm"
+    return "新会议 \(formatter.string(from: date))"
   }
 
   private var currentModelConfiguration: ModelConfiguration {
@@ -818,12 +916,62 @@ final class AppModel: ObservableObject {
     ModelConfigurationResolver().preview(for: currentModelConfiguration)
   }
 
+  var realtimeTranscriptionConfigurationPreview: RealtimeTranscriptionConfigurationPreview {
+    RealtimeTranscriptionConfigurationResolver().preview()
+  }
+
+  var effectiveTranscriptionQualityMode: TranscriptionQualityMode {
+    selectedInputIsManual ? .local : transcriptionQualityMode
+  }
+
+  var canUseHighQualityTranscription: Bool {
+    !selectedInputIsManual && realtimeTranscriptionConfigurationPreview.isValid
+  }
+
+  var highQualityTranscriptionStatusText: String {
+    let preview = realtimeTranscriptionConfigurationPreview
+    if selectedInputIsManual {
+      return "Manual"
+    }
+    if preview.isValid {
+      return "Ready"
+    }
+    return "Missing Key"
+  }
+
+  var highQualityTranscriptionDetailText: String {
+    let preview = realtimeTranscriptionConfigurationPreview
+    if selectedInputIsManual {
+      return "Manual Input uses typed transcript."
+    }
+    if preview.isValid {
+      return "Ready via \(preview.model)."
+    }
+    return preview.apiKey.errorMessage ?? "OPENAI_API_KEY is unavailable."
+  }
+
+  var audioInputStatusText: String {
+    guard currentSession?.status == .recording else {
+      return "Idle"
+    }
+
+    if audioPeakLevel < 0.018 && audioLevel < 0.007 {
+      return "Weak"
+    }
+
+    return isReceivingAudio ? "Audio" : "Quiet"
+  }
+
+  var normalizedAudioMeterLevel: Double {
+    min(1, max(audioPeakLevel * 10, audioLevel * 18))
+  }
+
   func maskedResolvedValue(for value: ResolvedConfigurationValue) -> String {
     guard let resolvedValue = value.resolvedValue, !resolvedValue.isEmpty else {
       return "Unavailable"
     }
 
-    if value.rawValue == modelAPIKeyReference {
+    if value.rawValue == modelAPIKeyReference || value.rawValue.contains("API_KEY") {
       if resolvedValue.count <= 8 {
         return String(repeating: "•", count: max(resolvedValue.count, 4))
       }
@@ -866,6 +1014,7 @@ final class AppModel: ObservableObject {
 
   private func handleMeetingStartError(_ error: Error) {
     let description = error.localizedDescription
+    appendAppDebugLog("startMeeting failed: \(description)")
     if description.contains("Screen Recording access was denied.")
       || description.contains("Screen Recording access is required for System Audio.")
       || description.contains("Screen & System Audio Recording access is required for System Audio.")
@@ -881,6 +1030,26 @@ final class AppModel: ObservableObject {
     }
 
     statusMessage = description
+  }
+
+  private func appendAppDebugLog(_ message: String) {
+    let timestamp = ISO8601DateFormatter().string(from: Date())
+    let line = "[\(timestamp)] \(message)\n"
+    let url = paths.nativeDirectory.appending(path: "app-debug.log", directoryHint: .notDirectory)
+
+    do {
+      try paths.ensureDirectories()
+      if FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(line.utf8))
+        try handle.close()
+      } else {
+        try line.write(to: url, atomically: true, encoding: .utf8)
+      }
+    } catch {
+      // Best-effort app diagnostics only.
+    }
   }
 
   private func preferredUsableInput(from inputs: [AudioInputDevice]) -> AudioInputDevice? {

@@ -172,6 +172,8 @@ public actor MeetingSessionStore {
     audio_file: \(session.audioFilePath)
     dictionary_file: \(session.dictionaryPath)
     input_device: \(session.selectedInput?.name ?? "")
+    transcription_provider: \(session.transcriptionProvider ?? "")
+    transcription_model: \(session.transcriptionModel ?? "")
     exported_note: \(session.exportedNotePath ?? "")
     ---
 
