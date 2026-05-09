@@ -4,6 +4,7 @@ WalleBrain is a native macOS meeting workspace for live transcription and post-p
 
 It currently focuses on:
 - live transcription with Apple Speech APIs
+- optional high-quality live transcription through OpenAI Realtime when `OPENAI_API_KEY` is set
 - microphone / system-audio / mixed capture
 - structured meeting notes generated through a configurable OpenAI-compatible LLM endpoint
 - an editable term dictionary for company- or domain-specific vocabulary
@@ -34,6 +35,7 @@ Current distribution limitation:
 - Swift 6.2 toolchain
 - microphone permission for live meetings
 - Screen & System Audio Recording permission if you want system audio capture
+- `OPENAI_API_KEY` if you want High Quality realtime transcription
 - an OpenAI-compatible chat completions endpoint for post-processing
 
 ## Quick Start
@@ -61,6 +63,26 @@ You can also open `Settings` in the app and set:
 - an ordered fallback chain: `gpt-4.1-mini, gpt-4.1`
 
 If a setting starts with `$`, WalleBrain resolves it as an environment variable. Otherwise, the setting is used as a literal value. The app expects an OpenAI-compatible `/chat/completions` API; if the base URL ends at `/v1`, WalleBrain appends `/chat/completions` automatically.
+
+### Optional: High Quality realtime transcription
+
+The meeting controls include a `Local / High Quality` transcription mode.
+
+- `Local` uses Apple Speech and keeps live transcription on-device.
+- `High Quality` streams live meeting audio to OpenAI Realtime and reads the API key from `OPENAI_API_KEY`.
+- The input meter shows `Idle`, `Weak`, `Quiet`, or `Audio` so you can confirm the selected audio source is active before relying on live transcription.
+
+```bash
+export OPENAI_API_KEY="your-openai-api-key"
+```
+
+The default realtime transcription model is `gpt-realtime-whisper`. If OpenAI publishes a dated model id, override it without changing app settings:
+
+```bash
+export WALLEBRAIN_REALTIME_TRANSCRIPTION_MODEL="gpt-realtime-whisper"
+```
+
+High Quality mode sends live audio to OpenAI and applies upload-side gain for weak microphone input. Use `Local` when you want fully on-device live transcription or when network reliability is more important than cloud transcription quality.
 
 ### 2. Run tests
 
@@ -106,8 +128,13 @@ These files are kept as historical prototype code and are not the main product p
 ## Privacy / Data Flow
 
 - live speech recognition is performed locally through Apple speech APIs
+- High Quality live transcription sends meeting audio to OpenAI Realtime
 - meeting audio is saved locally under `runtime/`
 - post-processing sends transcript text, not raw audio, to the configured LLM endpoint
+
+## Recovery Behavior
+
+If WalleBrain quits unexpectedly during a meeting, the next launch marks interrupted `preparing`, `recording`, or `processing` sessions as `failed` instead of treating them as still running. Partial transcript and audio files are preserved, and failed post-processing can be retried from the app when transcript text exists.
 
 ## Roadmap Gaps
 
