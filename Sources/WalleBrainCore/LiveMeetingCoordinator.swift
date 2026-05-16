@@ -14,6 +14,8 @@ public actor LiveMeetingCoordinator {
   private let mixedRecorder = MixedCaptureService()
   private let onUpdate: @Sendable (NativeMeetingSession) async -> Void
   private let onAudioLevel: @Sendable (AudioLevelSnapshot) async -> Void
+  private let realtimePreviewEmitInterval: Duration = .milliseconds(300)
+  private let realtimeStopDrainTimeout: Duration = .seconds(3)
 
   private var currentSession: NativeMeetingSession?
   private var analyzer: SpeechAnalyzer?
@@ -26,6 +28,7 @@ public actor LiveMeetingCoordinator {
   private var transcriptChunks: [String: TranscriptChunk] = [:]
   private let transcriptAssembler = TranscriptAssembler()
   private var realtimeStableTranscript = ""
+  private var lastRealtimePreviewEmitAt: ContinuousClock.Instant?
   private var isStoppingMeeting = false
   private var activeInputID: String?
   private let liveDebugEnabled = ProcessInfo.processInfo.environment["WALLEBRAIN_DEBUG_LIVE"] == "1"
@@ -117,6 +120,7 @@ public actor LiveMeetingCoordinator {
     currentSession = session
     transcriptChunks = [:]
     realtimeStableTranscript = ""
+    lastRealtimePreviewEmitAt = nil
     await trace("session created json=\(session.sessionJSONPath) audio=\(session.audioFilePath)")
     await emit(session)
 
@@ -279,7 +283,7 @@ public actor LiveMeetingCoordinator {
         try await stopActiveCapture()
         try await ensurePrimaryAudioArtifactExists(for: session)
         if let realtimeResultsTask {
-          await realtimeResultsTask.value
+          await waitForRealtimeResultsDuringStop(realtimeResultsTask)
           self.realtimeResultsTask = nil
         } else {
           try await analyzer?.finalizeAndFinishThroughEndOfInput()
@@ -396,7 +400,8 @@ public actor LiveMeetingCoordinator {
       return
     }
 
-    let text = mergedRealtimeTranscript(with: result.text, isPreview: result.id == "realtime-streaming")
+    let isPreview = result.id == "realtime-streaming"
+    let text = mergedRealtimeTranscript(with: result.text, isPreview: isPreview)
     let chunk = TranscriptChunk(
       id: "realtime-live",
       startSeconds: 0,
@@ -408,6 +413,11 @@ public actor LiveMeetingCoordinator {
     session.liveTranscript = text
 
     currentSession = session
+
+    if isPreview {
+      await emitRealtimePreviewIfNeeded(session)
+      return
+    }
 
     do {
       try await persistCurrentSession()
@@ -469,6 +479,18 @@ public actor LiveMeetingCoordinator {
     await onUpdate(session)
   }
 
+  private func emitRealtimePreviewIfNeeded(_ session: NativeMeetingSession) async {
+    let now = ContinuousClock.now
+    if let lastRealtimePreviewEmitAt,
+       lastRealtimePreviewEmitAt.duration(to: now) < realtimePreviewEmitInterval
+    {
+      return
+    }
+
+    lastRealtimePreviewEmitAt = now
+    await emit(session)
+  }
+
   private func fail(message: String) async {
     guard var session = currentSession else {
       await trace("fail without currentSession message=\(message)")
@@ -493,6 +515,7 @@ public actor LiveMeetingCoordinator {
     resultsTask = nil
     realtimeResultsTask = nil
     realtimeStableTranscript = ""
+    lastRealtimePreviewEmitAt = nil
     isStoppingMeeting = false
     activeInputID = nil
   }
@@ -571,6 +594,32 @@ public actor LiveMeetingCoordinator {
       || description.contains("socket not connected")
       || description.contains("network connection was lost")
       || description.contains("cancelled")
+  }
+
+  private func waitForRealtimeResultsDuringStop(_ task: Task<Void, Never>) async {
+    let timeout = realtimeStopDrainTimeout
+    let realtimeTranscriber = realtimeTranscriber
+
+    await withTaskGroup(of: Bool.self) { group in
+      group.addTask {
+        await task.value
+        return true
+      }
+
+      group.addTask {
+        try? await Task.sleep(for: timeout)
+        await realtimeTranscriber?.close()
+        task.cancel()
+        return false
+      }
+
+      let finishedBeforeTimeout = await group.next() ?? false
+      group.cancelAll()
+
+      if !finishedBeforeTimeout {
+        await trace("realtime stop drain timed out after \(timeout)")
+      }
+    }
   }
 
   private func meteredStream(from source: AsyncStream<AnalyzerInput>) -> AsyncStream<AnalyzerInput> {
