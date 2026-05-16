@@ -1,25 +1,16 @@
 import Foundation
 
 public actor LLMChatClient {
-  private static let maximumRequestAttempts = 3
-  private static let retryDelays: [Duration] = [.seconds(2), .seconds(8)]
-
-  private static let urlSession: URLSession = {
-    let configuration = URLSessionConfiguration.default
-    configuration.timeoutIntervalForRequest = 900
-    configuration.timeoutIntervalForResource = 1_800
-    configuration.waitsForConnectivity = true
-    return URLSession(configuration: configuration)
-  }()
-
   private let apiKey: String
   private let completionURL: URL
   private let modelChain: [String]
   private let providerLabel: String
+  private let networkPolicy: NetworkTransportPolicy
 
   public init(
     environment: [String: String] = ProcessInfo.processInfo.environment,
-    configuration: ModelConfiguration? = nil
+    configuration: ModelConfiguration? = nil,
+    networkPolicy: NetworkTransportPolicy = .llmDefault()
   ) throws {
     let effectiveConfiguration = configuration ?? ModelConfigurationStore().load()
     let resolvedConfiguration = try ModelConfigurationResolver(environment: environment).resolve(effectiveConfiguration)
@@ -32,6 +23,7 @@ public actor LLMChatClient {
     self.completionURL = Self.resolveCompletionURL(from: url)
     self.modelChain = resolvedConfiguration.models
     self.providerLabel = resolvedConfiguration.providerLabel
+    self.networkPolicy = networkPolicy
   }
 
   public func summarize(transcript: String, dictionary: TermDictionary) async throws -> LLMPostProcessingResult {
@@ -647,7 +639,7 @@ public actor LLMChatClient {
     ]
 
     request.httpBody = try JSONSerialization.data(withJSONObject: body)
-    let (statusCode, data) = try await Self.performRequest(request)
+    let (statusCode, data) = try await performRequest(request)
 
     guard (200..<300).contains(statusCode) else {
       throw WalleBrainError.invalidResponse(
@@ -717,26 +709,26 @@ public actor LLMChatClient {
     return url.appending(path: "chat/completions")
   }
 
-  private static func performRequest(_ request: URLRequest) async throws -> (Int, Data) {
+  private func performRequest(_ request: URLRequest) async throws -> (Int, Data) {
     var attemptSummaries: [String] = []
 
-    for attempt in 1...maximumRequestAttempts {
+    for attempt in 1...NetworkTransportPolicy.maximumRequestAttempts {
       do {
         let response = try await performSingleRequestAttempt(request)
-        if isTransientHTTPStatus(response.0), attempt < maximumRequestAttempts {
-          attemptSummaries.append("attempt \(attempt) returned HTTP \(response.0): \(responsePreview(from: response.1))")
-          try await sleepBeforeRetry(attempt: attempt)
+        if NetworkTransportPolicy.isTransientHTTPStatus(response.0), attempt < NetworkTransportPolicy.maximumRequestAttempts {
+          attemptSummaries.append("attempt \(attempt) returned HTTP \(response.0): \(Self.responsePreview(from: response.1))")
+          try await NetworkTransportPolicy.sleepBeforeRetry(attempt: attempt)
           continue
         }
 
         return response
       } catch {
         attemptSummaries.append("attempt \(attempt) failed: \(error.localizedDescription)")
-        guard attempt < maximumRequestAttempts else {
+        guard attempt < NetworkTransportPolicy.maximumRequestAttempts else {
           break
         }
 
-        try await sleepBeforeRetry(attempt: attempt)
+        try await NetworkTransportPolicy.sleepBeforeRetry(attempt: attempt)
       }
     }
 
@@ -745,26 +737,32 @@ public actor LLMChatClient {
     )
   }
 
-  private static func performSingleRequestAttempt(_ request: URLRequest) async throws -> (Int, Data) {
-    do {
-      return try await performURLSessionRequest(request)
-    } catch let urlSessionError {
+  private func performSingleRequestAttempt(_ request: URLRequest) async throws -> (Int, Data) {
+    var fallbackSummaries: [String] = []
+
+    for route in networkPolicy.urlSessionRoutes {
       do {
-        return try performCurlRequest(request, bypassProxy: false)
-      } catch let curlError {
-        do {
-          return try performCurlRequest(request, bypassProxy: true)
-        } catch let directCurlError {
-          throw WalleBrainError.invalidResponse(
-            "URLSession request failed: \(urlSessionError.localizedDescription); curl fallback failed: \(curlError.localizedDescription); direct curl fallback failed: \(directCurlError.localizedDescription)"
-          )
-        }
+        return try await performURLSessionRequest(request, route: route)
+      } catch {
+        fallbackSummaries.append("\(route.label) failed: \(error.localizedDescription)")
+      }
+
+      do {
+        return try Self.performCurlRequest(request, bypassProxy: route.bypassesProxy)
+      } catch {
+        let label = route.bypassesProxy ? "direct curl fallback" : "curl fallback"
+        fallbackSummaries.append("\(label) failed: \(error.localizedDescription)")
       }
     }
+
+    throw WalleBrainError.invalidResponse(fallbackSummaries.joined(separator: "; "))
   }
 
-  private static func performURLSessionRequest(_ request: URLRequest) async throws -> (Int, Data) {
-    let (data, response) = try await urlSession.data(for: request)
+  private func performURLSessionRequest(
+    _ request: URLRequest,
+    route: NetworkTransportPolicy.URLSessionRoute
+  ) async throws -> (Int, Data) {
+    let (data, response) = try await route.urlSession.data(for: request)
     guard let httpResponse = response as? HTTPURLResponse else {
       throw WalleBrainError.invalidResponse("Missing HTTP response.")
     }
@@ -831,19 +829,6 @@ public actor LLMChatClient {
     }
 
     return (statusCode, Data(bodyText.utf8))
-  }
-
-  private static func isTransientHTTPStatus(_ statusCode: Int) -> Bool {
-    statusCode == 408
-      || statusCode == 409
-      || statusCode == 425
-      || statusCode == 429
-      || (500..<600).contains(statusCode)
-  }
-
-  private static func sleepBeforeRetry(attempt: Int) async throws {
-    let index = max(0, min(attempt - 1, retryDelays.count - 1))
-    try await Task.sleep(for: retryDelays[index])
   }
 
   private static func responsePreview(from data: Data) -> String {
