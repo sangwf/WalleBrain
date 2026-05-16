@@ -17,6 +17,10 @@ public struct RealtimeTranscriptionResult: Sendable, Hashable {
 }
 
 public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
+  static let maximumRealtimeSessionDurationSeconds = 60.0 * 60.0
+  static let proactiveRealtimeSessionRotationSeconds = 50.0 * 60.0
+  static let commitIntervalSeconds = 2.5
+
   public static let audioFormat = AVAudioFormat(
     commonFormat: .pcmFormatInt16,
     sampleRate: 24_000,
@@ -65,10 +69,14 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
     let gain: Double
   }
 
+  private struct SessionAudioResult: Sendable {
+    let shouldRotate: Bool
+    let audioSecondsSent: Double
+  }
+
   private let configuration: RealtimeTranscriptionConfiguration
   private let urlSession: URLSession
   private let debugLogURL: URL?
-  private let commitIntervalSeconds = 6.0
   private let decoder = JSONDecoder()
   private var webSocketTask: URLSessionWebSocketTask?
   private var itemTimingByID: [String: ItemTiming] = [:]
@@ -76,6 +84,7 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
   private var streamingTranscript = ""
   private var fallbackNextStartSeconds = 0.0
   private var completedSequence = 0
+  private var currentSessionAudioOffsetSeconds = 0.0
 
   public init(
     configuration: RealtimeTranscriptionConfiguration,
@@ -100,43 +109,85 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
     prompt: String,
     onTranscript: @escaping @Sendable (RealtimeTranscriptionResult) async -> Void
   ) async throws {
+    var audioIterator = stream.makeAsyncIterator()
+    var sessionIndex = 0
+    var totalAudioSecondsSent = 0.0
+
+    while !Task.isCancelled {
+      sessionIndex += 1
+      currentSessionAudioOffsetSeconds = totalAudioSecondsSent
+      let result = try await runRealtimeSession(
+        audioIterator: &audioIterator,
+        prompt: prompt,
+        sessionIndex: sessionIndex,
+        onTranscript: onTranscript
+      )
+      totalAudioSecondsSent += result.audioSecondsSent
+
+      guard result.shouldRotate else {
+        return
+      }
+    }
+  }
+
+  public func close() async {
+    await closeCurrentConnection()
+  }
+
+  static func shouldRotateRealtimeSession(afterAudioSeconds audioSeconds: Double) -> Bool {
+    audioSeconds >= proactiveRealtimeSessionRotationSeconds
+  }
+
+  private func runRealtimeSession(
+    audioIterator: inout AsyncStream<AnalyzerInput>.Iterator,
+    prompt: String,
+    sessionIndex: Int,
+    onTranscript: @escaping @Sendable (RealtimeTranscriptionResult) async -> Void
+  ) async throws -> SessionAudioResult {
     let clientSecret = try await Self.createClientSecret(
       configuration: configuration,
       prompt: prompt,
       urlSession: urlSession
     )
-    log("client secret created model=\(configuration.model)")
+    resetPerConnectionState()
+    log("client secret created model=\(configuration.model) session=\(sessionIndex)")
     let task = try makeWebSocketTask(clientSecret: clientSecret)
     webSocketTask = task
     task.resume()
-    log("websocket resumed")
+    log("websocket resumed session=\(sessionIndex)")
 
-    try await withThrowingTaskGroup(of: Void.self) { group in
-      group.addTask {
-        try await self.receiveEvents(onTranscript: onTranscript)
-      }
+    let receiverTask = Task {
+      try await self.receiveEvents(onTranscript: onTranscript)
+    }
 
-      group.addTask {
-        try await self.sendAudio(from: stream)
+    do {
+      let result = try await sendAudioForCurrentSession(
+        from: &audioIterator,
+        sessionIndex: sessionIndex
+      )
+      if result.shouldRotate {
+        log("rotating realtime session=\(sessionIndex) audioSeconds=\(String(format: "%.2f", result.audioSecondsSent))")
         try? await Task.sleep(for: .milliseconds(1_500))
-        await self.close()
       }
-
-      do {
-        try await group.next()
-      } catch {
-        group.cancelAll()
-        await close()
-        throw error
-      }
-
-      group.cancelAll()
+      await closeCurrentConnection()
+      try await waitForReceiver(receiverTask, sessionIndex: sessionIndex)
+      return result
+    } catch {
+      await closeCurrentConnection()
+      receiverTask.cancel()
+      _ = try? await receiverTask.value
+      throw error
     }
   }
 
-  public func close() async {
+  private func closeCurrentConnection() async {
     webSocketTask?.cancel(with: .goingAway, reason: nil)
     webSocketTask = nil
+  }
+
+  private func resetPerConnectionState() {
+    itemTimingByID.removeAll()
+    deltaTextByItemID.removeAll()
   }
 
   private func makeWebSocketTask(clientSecret: String) throws -> URLSessionWebSocketTask {
@@ -153,16 +204,21 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
     return urlSession.webSocketTask(with: request)
   }
 
-  private func sendAudio(from stream: AsyncStream<AnalyzerInput>) async throws {
+  private func sendAudioForCurrentSession(
+    from audioIterator: inout AsyncStream<AnalyzerInput>.Iterator,
+    sessionIndex: Int
+  ) async throws -> SessionAudioResult {
     var pendingAudioSeconds = 0.0
+    var sessionAudioSeconds = 0.0
     var appendCount = 0
     var commitCount = 0
     var pendingSourceRMS = 0.0
     var pendingEncodedRMS = 0.0
     var pendingGain = 0.0
     var pendingMeterCount = 0
+    let startedAt = ContinuousClock.now
 
-    for await input in stream {
+    while let input = await audioIterator.next() {
       let rms = Self.rmsLevel(of: input.buffer)
       guard let audio = Self.encodedPCM16Audio(from: input.buffer) else {
         log("skip buffer conversion failed format=\(input.buffer.format)")
@@ -176,11 +232,12 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
       ])
 
       pendingAudioSeconds += Self.durationSeconds(of: input.buffer)
+      sessionAudioSeconds += Self.durationSeconds(of: input.buffer)
       pendingSourceRMS += rms
       pendingEncodedRMS += audio.rms
       pendingGain += audio.gain
       pendingMeterCount += 1
-      if pendingAudioSeconds >= commitIntervalSeconds {
+      if pendingAudioSeconds >= Self.commitIntervalSeconds {
         commitCount += 1
         let meterCount = max(1, pendingMeterCount)
         log(
@@ -196,12 +253,36 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
         pendingGain = 0
         pendingMeterCount = 0
       }
+
+      if Self.shouldRotateRealtimeSession(afterAudioSeconds: sessionAudioSeconds)
+        || startedAt.duration(to: .now) >= .seconds(Int(Self.proactiveRealtimeSessionRotationSeconds))
+      {
+        if pendingAudioSeconds >= 0.2 {
+          log("rotation commit session=\(sessionIndex) pendingSeconds=\(String(format: "%.2f", pendingAudioSeconds))")
+          try await commitAudioBuffer()
+        }
+        return SessionAudioResult(shouldRotate: true, audioSecondsSent: sessionAudioSeconds)
+      }
     }
 
     log("audio stream ended appendCount=\(appendCount) pendingSeconds=\(String(format: "%.2f", pendingAudioSeconds))")
     if pendingAudioSeconds >= 0.2 {
       log("final commit pendingSeconds=\(String(format: "%.2f", pendingAudioSeconds))")
       try await commitAudioBuffer()
+    }
+    try? await Task.sleep(for: .milliseconds(1_500))
+    return SessionAudioResult(shouldRotate: false, audioSecondsSent: sessionAudioSeconds)
+  }
+
+  private func waitForReceiver(_ receiverTask: Task<Void, Error>, sessionIndex: Int) async throws {
+    do {
+      try await receiverTask.value
+    } catch {
+      if isExpectedConnectionCloseError(error) {
+        log("receiver closed session=\(sessionIndex) reason=\(error.localizedDescription)")
+        return
+      }
+      throw error
     }
   }
 
@@ -256,12 +337,13 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
       let startSeconds: Double
       let durationSeconds: Double
       if hasTiming {
-        startSeconds = Double(timing?.startMS ?? 0) / 1_000
-        let endSeconds = Double(timing?.endMS ?? timing?.startMS ?? 0) / 1_000
-        durationSeconds = max(0, endSeconds - startSeconds)
+        let sessionStartSeconds = Double(timing?.startMS ?? 0) / 1_000
+        let sessionEndSeconds = Double(timing?.endMS ?? timing?.startMS ?? 0) / 1_000
+        startSeconds = currentSessionAudioOffsetSeconds + sessionStartSeconds
+        durationSeconds = max(0, sessionEndSeconds - sessionStartSeconds)
       } else {
         startSeconds = fallbackNextStartSeconds
-        durationSeconds = commitIntervalSeconds
+        durationSeconds = Self.commitIntervalSeconds
         fallbackNextStartSeconds += durationSeconds
       }
       completedSequence += 1
@@ -406,6 +488,17 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
         }
       }
     }
+  }
+
+  private func isExpectedConnectionCloseError(_ error: Error) -> Bool {
+    let description = error.localizedDescription.lowercased()
+    return description.contains("cancelled")
+      || description.contains("socket is not connected")
+      || description.contains("socket not connected")
+      || description.contains("network connection was lost")
+      || description.contains("realtime transcription connection is not open")
+      || description.contains("session_expired")
+      || description.contains("maximum duration")
   }
 
   private static func encodedPCM16Audio(from buffer: AVAudioPCMBuffer) -> EncodedAudio? {
