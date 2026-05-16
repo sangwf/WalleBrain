@@ -74,8 +74,13 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
     let audioSecondsSent: Double
   }
 
+  private struct ClientSecretResult: Sendable {
+    let value: String
+    let route: NetworkTransportPolicy.URLSessionRoute
+  }
+
   private let configuration: RealtimeTranscriptionConfiguration
-  private let urlSession: URLSession
+  private let networkPolicy: NetworkTransportPolicy
   private let debugLogURL: URL?
   private let decoder = JSONDecoder()
   private var webSocketTask: URLSessionWebSocketTask?
@@ -88,20 +93,39 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
 
   public init(
     configuration: RealtimeTranscriptionConfiguration,
-    urlSession: URLSession = .shared,
+    networkPolicy: NetworkTransportPolicy = .realtimeDefault(),
     debugLogURL: URL? = nil
   ) {
     self.configuration = configuration
-    self.urlSession = urlSession
+    self.networkPolicy = networkPolicy
     self.debugLogURL = debugLogURL
+  }
+
+  public convenience init(
+    configuration: RealtimeTranscriptionConfiguration,
+    urlSession: URLSession,
+    debugLogURL: URL? = nil
+  ) {
+    self.init(
+      configuration: configuration,
+      networkPolicy: .singleURLSession(urlSession),
+      debugLogURL: debugLogURL
+    )
   }
 
   public static func testConnection(
     configuration: RealtimeTranscriptionConfiguration,
-    urlSession: URLSession = .shared
+    networkPolicy: NetworkTransportPolicy = .realtimeDefault()
   ) async throws -> String {
-    _ = try await Self.createClientSecret(configuration: configuration, prompt: "", urlSession: urlSession)
+    _ = try await Self.createClientSecret(configuration: configuration, prompt: "", networkPolicy: networkPolicy)
     return configuration.model
+  }
+
+  public static func testConnection(
+    configuration: RealtimeTranscriptionConfiguration,
+    urlSession: URLSession
+  ) async throws -> String {
+    try await testConnection(configuration: configuration, networkPolicy: .singleURLSession(urlSession))
   }
 
   public func run(
@@ -147,11 +171,11 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
     let clientSecret = try await Self.createClientSecret(
       configuration: configuration,
       prompt: prompt,
-      urlSession: urlSession
+      networkPolicy: networkPolicy
     )
     resetPerConnectionState()
-    log("client secret created model=\(configuration.model) session=\(sessionIndex)")
-    let task = try makeWebSocketTask(clientSecret: clientSecret)
+    log("client secret created model=\(configuration.model) session=\(sessionIndex) route=\(clientSecret.route.label)")
+    let task = try makeWebSocketTask(clientSecret: clientSecret.value, route: clientSecret.route)
     webSocketTask = task
     task.resume()
     log("websocket resumed session=\(sessionIndex)")
@@ -190,7 +214,10 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
     deltaTextByItemID.removeAll()
   }
 
-  private func makeWebSocketTask(clientSecret: String) throws -> URLSessionWebSocketTask {
+  private func makeWebSocketTask(
+    clientSecret: String,
+    route: NetworkTransportPolicy.URLSessionRoute
+  ) throws -> URLSessionWebSocketTask {
     guard var components = URLComponents(string: "wss://api.openai.com/v1/realtime") else {
       throw WalleBrainError.invalidResponse("Realtime transcription URL is invalid.")
     }
@@ -201,7 +228,7 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
 
     var request = URLRequest(url: url)
     request.addValue("Bearer \(clientSecret)", forHTTPHeaderField: "Authorization")
-    return urlSession.webSocketTask(with: request)
+    return route.urlSession.webSocketTask(with: request)
   }
 
   private func sendAudioForCurrentSession(
@@ -623,8 +650,8 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
   private static func createClientSecret(
     configuration: RealtimeTranscriptionConfiguration,
     prompt: String,
-    urlSession: URLSession
-  ) async throws -> String {
+    networkPolicy: NetworkTransportPolicy
+  ) async throws -> ClientSecretResult {
     guard let url = URL(string: "https://api.openai.com/v1/realtime/client_secrets") else {
       throw WalleBrainError.invalidResponse("Realtime transcription client secret URL is invalid.")
     }
@@ -672,23 +699,86 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
     request.addValue("application/json", forHTTPHeaderField: "Content-Type")
     request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
 
-    let (data, response) = try await urlSession.data(for: request)
-    guard let httpResponse = response as? HTTPURLResponse else {
-      throw WalleBrainError.invalidResponse("Realtime transcription test returned a non-HTTP response.")
-    }
-    guard (200..<300).contains(httpResponse.statusCode) else {
-      throw WalleBrainError.invalidResponse(Self.errorMessage(from: data, statusCode: httpResponse.statusCode))
+    return try await createClientSecret(request: request, networkPolicy: networkPolicy)
+  }
+
+  private static func createClientSecret(
+    request: URLRequest,
+    networkPolicy: NetworkTransportPolicy
+  ) async throws -> ClientSecretResult {
+    var attemptSummaries: [String] = []
+
+    for attempt in 1...NetworkTransportPolicy.maximumRequestAttempts {
+      let result: (statusCode: Int, data: Data, route: NetworkTransportPolicy.URLSessionRoute)
+      do {
+        result = try await createClientSecretSingleAttempt(request: request, networkPolicy: networkPolicy)
+      } catch {
+        attemptSummaries.append("attempt \(attempt) failed: \(error.localizedDescription)")
+        guard attempt < NetworkTransportPolicy.maximumRequestAttempts else {
+          break
+        }
+
+        try await NetworkTransportPolicy.sleepBeforeRetry(attempt: attempt)
+        continue
+      }
+
+      if NetworkTransportPolicy.isTransientHTTPStatus(result.statusCode),
+        attempt < NetworkTransportPolicy.maximumRequestAttempts
+      {
+        attemptSummaries.append("attempt \(attempt) returned HTTP \(result.statusCode): \(responsePreview(from: result.data))")
+        try await NetworkTransportPolicy.sleepBeforeRetry(attempt: attempt)
+        continue
+      }
+
+      guard (200..<300).contains(result.statusCode) else {
+        throw WalleBrainError.invalidResponse(errorMessage(from: result.data, statusCode: result.statusCode))
+      }
+
+      guard
+        let object = try? JSONSerialization.jsonObject(with: result.data) as? [String: Any],
+        let value = object["value"] as? String,
+        !value.isEmpty
+      else {
+        throw WalleBrainError.invalidResponse("Realtime transcription client secret response did not include a token.")
+      }
+
+      return ClientSecretResult(value: value, route: result.route)
     }
 
-    guard
-      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      let value = object["value"] as? String,
-      !value.isEmpty
-    else {
-      throw WalleBrainError.invalidResponse("Realtime transcription client secret response did not include a token.")
+    throw WalleBrainError.invalidResponse(
+      "All realtime client secret request attempts failed. \(attemptSummaries.joined(separator: " | "))"
+    )
+  }
+
+  private static func createClientSecretSingleAttempt(
+    request: URLRequest,
+    networkPolicy: NetworkTransportPolicy
+  ) async throws -> (statusCode: Int, data: Data, route: NetworkTransportPolicy.URLSessionRoute) {
+    var fallbackSummaries: [String] = []
+
+    for route in networkPolicy.urlSessionRoutes {
+      do {
+        let (data, response) = try await route.urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+          throw WalleBrainError.invalidResponse("Realtime transcription test returned a non-HTTP response.")
+        }
+        return (httpResponse.statusCode, data, route)
+      } catch {
+        fallbackSummaries.append("\(route.label) failed: \(error.localizedDescription)")
+      }
     }
 
-    return value
+    throw WalleBrainError.invalidResponse(fallbackSummaries.joined(separator: "; "))
+  }
+
+  private static func responsePreview(from data: Data) -> String {
+    let text = String(decoding: data, as: UTF8.self)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if text.count <= 300 {
+      return text
+    }
+
+    return "\(text.prefix(300))..."
   }
 
   private static func supportsPrompt(model: String) -> Bool {
