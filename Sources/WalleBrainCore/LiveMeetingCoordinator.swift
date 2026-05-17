@@ -61,9 +61,10 @@ public actor LiveMeetingCoordinator {
     title: String,
     mode: MeetingMode,
     preferredInputID: String? = nil,
-    transcriptionMode: TranscriptionQualityMode = .local
+    transcriptionMode: TranscriptionQualityMode = .local,
+    languageMode: TranscriptionLanguageMode = .automatic
   ) async throws {
-    await trace("startMeeting enter title=\(title) mode=\(mode.rawValue) transcription=\(transcriptionMode.rawValue) input=\(preferredInputID ?? "nil")")
+    await trace("startMeeting enter title=\(title) mode=\(mode.rawValue) transcription=\(transcriptionMode.rawValue) language=\(languageMode.rawValue) input=\(preferredInputID ?? "nil")")
     if let currentSession, [.preparing, .recording].contains(currentSession.status) {
       throw WalleBrainError.invalidResponse("A meeting is already running.")
     }
@@ -77,6 +78,7 @@ public actor LiveMeetingCoordinator {
     await trace("selected input id=\(selectedInput.id) name=\(selectedInput.name)")
     let isManualInput = AudioInputCatalog.isManualInput(id: selectedInput.id)
     let effectiveTranscriptionMode: TranscriptionQualityMode = isManualInput ? .local : transcriptionMode
+    let effectiveLanguageMode: TranscriptionLanguageMode = isManualInput ? .automatic : languageMode
 
     let requiresSystemAudio = AudioInputCatalog.isSystemAudioInput(id: selectedInput.id) || AudioInputCatalog.isMixedInput(id: selectedInput.id)
     let requiresMicrophone = !AudioInputCatalog.isSystemAudioInput(id: selectedInput.id) && !isManualInput
@@ -104,9 +106,7 @@ public actor LiveMeetingCoordinator {
         throw WalleBrainError.invalidResponse("Speech recognition access was denied.")
       }
 
-      let dictionary = try await dictionaryStore.loadDictionary()
-      let assets = try await compiler.compile(dictionary: dictionary)
-      _ = await compiler.configuration(for: assets)
+      _ = try await dictionaryStore.loadDictionary()
     }
 
     let startedAt = Date()
@@ -135,33 +135,25 @@ public actor LiveMeetingCoordinator {
     do {
       await debug("session-created")
       let analyzerFormat: AVAudioFormat
-      let transcriber: SpeechTranscriber?
+      var transcriber: SpeechTranscriber?
+      var resolvedLocalLocale: Locale?
       if effectiveTranscriptionMode == .highQuality {
         analyzerFormat = OpenAIRealtimeTranscriptionClient.audioFormat
         transcriber = nil
         await debug("realtime-format-created")
       } else {
-        let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: "zh_CN"))
-          ?? Locale(identifier: "zh_CN")
-        await debug("locale-ready")
-        let localTranscriber = SpeechTranscriber(
-          locale: locale,
-          preset: .timeIndexedProgressiveTranscription
-        )
+        let localeIdentifier = effectiveLanguageMode.localeIdentifier
+          ?? Self.stableAutomaticLocalLocaleIdentifier()
+        let locale = try await Self.supportedLocalSpeechLocale(for: localeIdentifier)
+        let localTranscriber = try await makeLocalTranscriber(locale: locale)
+        resolvedLocalLocale = locale
         self.transcriber = localTranscriber
         transcriber = localTranscriber
         await debug("transcriber-created")
 
-        if let request = try await AssetInventory.assetInstallationRequest(supporting: [localTranscriber]) {
-          await debug("asset-request-created")
-          try await request.downloadAndInstall()
-          await debug("asset-request-installed")
-        }
-
         let preferredAnalyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [localTranscriber])
         await debug("best-format-ready")
-        analyzerFormat = preferredAnalyzerFormat
-          ?? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+        analyzerFormat = preferredAnalyzerFormat ?? Self.defaultLocalAudioFormat()
         await debug("analyzer-format-created")
       }
 
@@ -213,6 +205,10 @@ public actor LiveMeetingCoordinator {
       session.transcriptionModel = effectiveTranscriptionMode == .highQuality
         ? realtimeConfiguration?.model
         : "SpeechTranscriber"
+      session.transcriptionLanguageMode = effectiveLanguageMode.rawValue
+      session.resolvedTranscriptionLocale = effectiveTranscriptionMode == .highQuality
+        ? effectiveLanguageMode.localeIdentifier
+        : resolvedLocalLocale?.identifier
       session.status = .recording
       currentSession = session
       activeInputID = capture.inputDevice.id
@@ -229,14 +225,16 @@ public actor LiveMeetingCoordinator {
         realtimeResultsTask = makeRealtimeResultsTask(
           transcriber: realtimeTranscriber,
           stream: meteredStream,
-          prompt: Self.realtimePrompt(from: dictionary)
+          prompt: Self.realtimePrompt(from: dictionary),
+          languageCode: effectiveLanguageMode.realtimeLanguageCode
         )
         await debug("realtime-task-created")
         await trace("realtime task created")
       } else {
-        guard let transcriber else {
+        guard let transcriber, let resolvedLocalLocale else {
           throw WalleBrainError.invalidResponse("Local speech transcriber was not initialized.")
         }
+        try await prepareCustomLanguageAssets(for: resolvedLocalLocale)
 
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         await debug("analyzer-created")
@@ -565,11 +563,12 @@ public actor LiveMeetingCoordinator {
   private func makeRealtimeResultsTask(
     transcriber: OpenAIRealtimeTranscriptionClient,
     stream: AsyncStream<AnalyzerInput>,
-    prompt: String
+    prompt: String,
+    languageCode: String?
   ) -> Task<Void, Never> {
     Task {
       do {
-        try await transcriber.run(stream: stream, prompt: prompt) { result in
+        try await transcriber.run(stream: stream, prompt: prompt, languageCode: languageCode) { result in
           await self.consume(result)
         }
       } catch {
@@ -620,6 +619,48 @@ public actor LiveMeetingCoordinator {
         await trace("realtime stop drain timed out after \(timeout)")
       }
     }
+  }
+
+  private static func defaultLocalAudioFormat() -> AVAudioFormat {
+    AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+  }
+
+  private static func stableAutomaticLocalLocaleIdentifier() -> String {
+    let preferredLanguages = Locale.preferredLanguages.map { $0.lowercased() }
+    if preferredLanguages.contains(where: { $0.hasPrefix("en") }) {
+      return "en_US"
+    }
+    return "zh_CN"
+  }
+
+  private static func supportedLocalSpeechLocale(for identifier: String) async throws -> Locale {
+    let requested = Locale(identifier: identifier)
+    if let supported = await SpeechTranscriber.supportedLocale(equivalentTo: requested) {
+      return supported
+    }
+    throw WalleBrainError.invalidResponse("Apple Speech does not support \(identifier) on this device.")
+  }
+
+  private func makeLocalTranscriber(locale: Locale) async throws -> SpeechTranscriber {
+    await debug("locale-ready \(locale.identifier)")
+    let localTranscriber = SpeechTranscriber(
+      locale: locale,
+      preset: .timeIndexedProgressiveTranscription
+    )
+
+    if let request = try await AssetInventory.assetInstallationRequest(supporting: [localTranscriber]) {
+      await debug("asset-request-created \(locale.identifier)")
+      try await request.downloadAndInstall()
+      await debug("asset-request-installed \(locale.identifier)")
+    }
+
+    return localTranscriber
+  }
+
+  private func prepareCustomLanguageAssets(for locale: Locale) async throws {
+    let dictionary = try await dictionaryStore.loadDictionary()
+    let assets = try await compiler.compile(dictionary: dictionary, locale: locale)
+    _ = await compiler.configuration(for: assets)
   }
 
   private func meteredStream(from source: AsyncStream<AnalyzerInput>) -> AsyncStream<AnalyzerInput> {

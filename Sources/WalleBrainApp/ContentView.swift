@@ -118,7 +118,7 @@ private struct MeetingsSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
-        Text("Meetings")
+        Text("Meetings\(model.recentSessions.isEmpty ? "" : " (\(model.recentSessions.count))")")
           .font(.caption)
           .foregroundStyle(.secondary)
           .textCase(.uppercase)
@@ -427,63 +427,49 @@ private struct MeetingWorkspaceView: View {
   }
 
   private var controlStrip: some View {
-    ViewThatFits(in: .horizontal) {
-      wideControlStrip
-      compactControlStrip
-    }
+    stableControlStrip
     .padding(.horizontal, 18)
     .padding(.vertical, 18)
     .background(Color.secondary.opacity(0.06))
     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
   }
 
-  private var wideControlStrip: some View {
+  private var stableControlStrip: some View {
     VStack(alignment: .leading, spacing: 14) {
-      inputControlRow(pickerWidth: 300)
-      HStack(alignment: .center, spacing: 16) {
-        transcriptionControlRow(statusWidth: 90)
-        Spacer(minLength: 12)
-        actionButtons
-      }
+      inputControlRow
+      transcriptionQualityControlRow
+      transcriptionLanguageControlRow
+      actionButtons
     }
-  }
-
-  private var compactControlStrip: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      inputControlRow(pickerWidth: 260)
-      HStack(alignment: .center, spacing: 12) {
-        transcriptionControlRow(statusWidth: 74)
-        actionButtons
-      }
-    }
+    .fixedSize(horizontal: true, vertical: false)
   }
 
   private var actionButtons: some View {
-    HStack(spacing: 12) {
-      Button("Start Meeting") {
-        Task {
-          await model.startMeeting()
+    controlRow("Actions") {
+      HStack(spacing: 12) {
+        Button("Start Meeting") {
+          Task {
+            await model.startMeeting()
+          }
         }
-      }
-      .buttonStyle(.borderedProminent)
-      .disabled(!model.canStartMeeting)
+        .buttonStyle(.borderedProminent)
+        .disabled(!model.canStartMeeting)
+        .frame(width: 118, alignment: .leading)
 
-      Button("Stop & Process") {
-        Task {
-          await model.stopMeetingAndProcess()
+        Button("Stop & Process") {
+          Task {
+            await model.stopMeetingAndProcess()
+          }
         }
+        .buttonStyle(.bordered)
+        .disabled(!model.canStopMeeting)
+        .frame(width: 122, alignment: .leading)
       }
-      .buttonStyle(.bordered)
-      .disabled(!model.canStopMeeting)
     }
-    .fixedSize(horizontal: true, vertical: false)
-    .layoutPriority(2)
   }
 
-  private func inputControlRow(pickerWidth: CGFloat) -> some View {
-    HStack(spacing: 12) {
-      controlLabel("Input")
-
+  private var inputControlRow: some View {
+    controlRow("Input") {
       HStack(spacing: 8) {
         Picker("Input", selection: $model.selectedInputID) {
           ForEach(model.availableInputs) { input in
@@ -491,7 +477,7 @@ private struct MeetingWorkspaceView: View {
           }
         }
         .labelsHidden()
-        .frame(width: pickerWidth)
+        .frame(width: 360, alignment: .leading)
 
         Button {
           model.refreshAudioInputs()
@@ -508,26 +494,53 @@ private struct MeetingWorkspaceView: View {
     }
   }
 
-  private func transcriptionControlRow(statusWidth: CGFloat) -> some View {
-    HStack(spacing: 12) {
-      controlLabel("Transcription")
+  private var transcriptionQualityControlRow: some View {
+    controlRow("Transcription") {
+      HStack(spacing: 14) {
+        Picker("Transcription", selection: $model.transcriptionQualityMode) {
+          Text("Local").tag(TranscriptionQualityMode.local)
+          Text("High Quality").tag(TranscriptionQualityMode.highQuality)
+            .disabled(!model.canUseHighQualityTranscription)
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .frame(width: 260, alignment: .leading)
+        .disabled(model.currentSession?.status == .recording || model.currentSession?.status == .processing)
 
-      Picker("Transcription", selection: $model.transcriptionQualityMode) {
-        Text("Local").tag(TranscriptionQualityMode.local)
-        Text("High Quality").tag(TranscriptionQualityMode.highQuality)
-          .disabled(!model.canUseHighQualityTranscription)
+        if shouldShowHighQualityWarning {
+          Text(model.highQualityTranscriptionStatusText)
+            .font(.caption)
+            .foregroundStyle(Color.red)
+            .lineLimit(1)
+            .frame(width: 92, alignment: .leading)
+            .help(model.highQualityTranscriptionDetailText)
+        }
+      }
+    }
+  }
+
+  private var shouldShowHighQualityWarning: Bool {
+    model.effectiveTranscriptionQualityMode == .highQuality && !model.canUseHighQualityTranscription
+  }
+
+  private var transcriptionLanguageControlRow: some View {
+    controlRow("Language") {
+      Picker("Language", selection: $model.transcriptionLanguageMode) {
+        ForEach(TranscriptionLanguageMode.allCases, id: \.self) { mode in
+          Text(mode.displayName).tag(mode)
+        }
       }
       .labelsHidden()
       .pickerStyle(.segmented)
-      .frame(width: 260)
+      .frame(width: 220, alignment: .leading)
       .disabled(model.currentSession?.status == .recording || model.currentSession?.status == .processing)
+    }
+  }
 
-      Text(model.highQualityTranscriptionStatusText)
-        .font(.caption)
-        .foregroundStyle(model.canUseHighQualityTranscription || model.effectiveTranscriptionQualityMode == .local ? Color.secondary : Color.red)
-        .lineLimit(1)
-        .frame(width: statusWidth, alignment: .leading)
-        .help(model.highQualityTranscriptionDetailText)
+  private func controlRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    HStack(alignment: .center, spacing: 14) {
+      controlLabel(title)
+      content()
     }
   }
 
@@ -536,7 +549,7 @@ private struct MeetingWorkspaceView: View {
       .font(.caption.weight(.semibold))
       .foregroundStyle(.secondary)
       .textCase(.uppercase)
-      .frame(width: 96, alignment: .leading)
+      .frame(width: 112, alignment: .leading)
   }
 
   private var audioMeterView: some View {

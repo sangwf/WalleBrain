@@ -11,11 +11,12 @@ public actor CustomLanguageModelCompiler {
   public func compile(dictionary: TermDictionary, locale: Locale = Locale(identifier: "zh_CN")) async throws -> CompiledLanguageAssets {
     try paths.ensureDirectories()
 
-    let identifier = "com.wallebrain.dictionary"
+    let localeIdentifier = locale.identifier.replacingOccurrences(of: "-", with: "_")
+    let identifier = "com.wallebrain.dictionary.\(localeIdentifier)"
     let version = Self.versionStamp(for: dictionary)
-    let assetURL = paths.speechAssetsDirectory.appending(path: "\(identifier).asset", directoryHint: .notDirectory)
-    let languageModelURL = paths.speechAssetsDirectory.appending(path: "\(identifier).lm", directoryHint: .notDirectory)
-    let vocabularyURL = paths.speechAssetsDirectory.appending(path: "\(identifier).vocab", directoryHint: .notDirectory)
+    let assetURL = paths.speechAssetsDirectory.appending(path: "\(identifier).\(version).asset", directoryHint: .notDirectory)
+    let languageModelURL = paths.speechAssetsDirectory.appending(path: "\(identifier).\(version).lm", directoryHint: .notDirectory)
+    let vocabularyURL = paths.speechAssetsDirectory.appending(path: "\(identifier).\(version).vocab", directoryHint: .notDirectory)
 
     let data = SFCustomLanguageModelData(locale: locale, identifier: identifier, version: version)
     for entry in dictionary.entries {

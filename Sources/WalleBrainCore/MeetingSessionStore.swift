@@ -174,6 +174,9 @@ public actor MeetingSessionStore {
     input_device: \(session.selectedInput?.name ?? "")
     transcription_provider: \(session.transcriptionProvider ?? "")
     transcription_model: \(session.transcriptionModel ?? "")
+    transcription_language_mode: \(session.transcriptionLanguageMode ?? "")
+    resolved_transcription_locale: \(session.resolvedTranscriptionLocale ?? "")
+    language_detection_confidence: \(session.languageDetectionConfidence.map { String(format: "%.3f", $0) } ?? "")
     exported_note: \(session.exportedNotePath ?? "")
     ---
 
