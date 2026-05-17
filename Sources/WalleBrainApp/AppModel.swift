@@ -299,6 +299,11 @@ final class AppModel: ObservableObject {
   }
 
   func startNewMeetingDraft() {
+    guard canEditMeetingSetup else {
+      statusMessage = "Stop the current recording before starting a new meeting."
+      return
+    }
+
     prepareNewMeetingDraft()
     selectedItem = .meeting
   }
@@ -428,9 +433,19 @@ final class AppModel: ObservableObject {
       }
       try await liveCoordinator.stopMeetingAndProcess()
       resetAudioLevel()
-      if let session = currentSession, session.status == .processing {
+      if let session = currentSession, [.processing, .exported, .failed].contains(session.status) {
         upsertRecentSession(session)
-        statusMessage = "Processing \(session.title) in background."
+        switch session.status {
+        case .processing:
+          statusMessage = "Processing \(session.title) in background."
+        case .exported:
+          statusMessage = "Exported \(session.title) via \(session.model ?? "local")."
+        case .failed:
+          statusMessage = session.errorMessage ?? "Meeting failed."
+        default:
+          break
+        }
+        prepareNewMeetingDraft()
       }
     } catch {
       statusMessage = error.localizedDescription
@@ -678,6 +693,10 @@ final class AppModel: ObservableObject {
       return false
     }
     return activeLiveSessionID == nil
+  }
+
+  var canEditMeetingSetup: Bool {
+    !isMeetingActionInFlight && activeLiveSessionID == nil
   }
 
   var canStopMeeting: Bool {

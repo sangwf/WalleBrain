@@ -478,6 +478,7 @@ private struct MeetingWorkspaceView: View {
         }
         .labelsHidden()
         .frame(width: 360, alignment: .leading)
+        .disabled(!model.canEditMeetingSetup)
 
         Button {
           model.refreshAudioInputs()
@@ -487,6 +488,7 @@ private struct MeetingWorkspaceView: View {
         }
         .buttonStyle(.plain)
         .frame(width: 28, height: 28)
+        .disabled(!model.canEditMeetingSetup)
         .help("Refresh audio inputs")
 
         audioMeterView
@@ -505,7 +507,7 @@ private struct MeetingWorkspaceView: View {
         .labelsHidden()
         .pickerStyle(.segmented)
         .frame(width: 260, alignment: .leading)
-        .disabled(model.currentSession?.status == .recording || model.currentSession?.status == .processing)
+        .disabled(!model.canEditMeetingSetup)
 
         if shouldShowHighQualityWarning {
           Text(model.highQualityTranscriptionStatusText)
@@ -533,7 +535,7 @@ private struct MeetingWorkspaceView: View {
       .labelsHidden()
       .pickerStyle(.segmented)
       .frame(width: 220, alignment: .leading)
-      .disabled(model.currentSession?.status == .recording || model.currentSession?.status == .processing)
+      .disabled(!model.canEditMeetingSetup)
     }
   }
 
