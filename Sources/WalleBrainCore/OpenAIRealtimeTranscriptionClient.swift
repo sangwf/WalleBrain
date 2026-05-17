@@ -18,7 +18,8 @@ public struct RealtimeTranscriptionResult: Sendable, Hashable {
 
 public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
   static let maximumRealtimeSessionDurationSeconds = 60.0 * 60.0
-  static let proactiveRealtimeSessionRotationSeconds = 50.0 * 60.0
+  static let proactiveRealtimeSessionRotationSeconds = 45.0 * 60.0
+  static let connectionCloseRotationRecoverySeconds = 40.0 * 60.0
   static let commitIntervalSeconds = 2.5
 
   public static let audioFormat = AVAudioFormat(
@@ -162,6 +163,18 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
     audioSeconds >= proactiveRealtimeSessionRotationSeconds
   }
 
+  static func shouldRotateRealtimeSession(afterWallClockDuration duration: Duration) -> Bool {
+    duration >= .seconds(Int(proactiveRealtimeSessionRotationSeconds))
+  }
+
+  static func shouldRecoverRealtimeSessionAfterConnectionClose(
+    wallClockDuration: Duration,
+    audioSeconds: Double
+  ) -> Bool {
+    wallClockDuration >= .seconds(Int(connectionCloseRotationRecoverySeconds))
+      || audioSeconds >= connectionCloseRotationRecoverySeconds
+  }
+
   private func runRealtimeSession(
     audioIterator: inout AsyncStream<AnalyzerInput>.Iterator,
     prompt: String,
@@ -252,43 +265,55 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
         continue
       }
 
-      appendCount += 1
-      try await sendJSON([
-        "type": "input_audio_buffer.append",
-        "audio": audio.base64,
-      ])
+      do {
+        appendCount += 1
+        try await sendJSON([
+          "type": "input_audio_buffer.append",
+          "audio": audio.base64,
+        ])
 
-      pendingAudioSeconds += Self.durationSeconds(of: input.buffer)
-      sessionAudioSeconds += Self.durationSeconds(of: input.buffer)
-      pendingSourceRMS += rms
-      pendingEncodedRMS += audio.rms
-      pendingGain += audio.gain
-      pendingMeterCount += 1
-      if pendingAudioSeconds >= Self.commitIntervalSeconds {
-        commitCount += 1
-        let meterCount = max(1, pendingMeterCount)
-        log(
-          "commit #\(commitCount) after append #\(appendCount) seconds=\(String(format: "%.2f", pendingAudioSeconds))"
-            + " sourceRMS=\(String(format: "%.5f", pendingSourceRMS / Double(meterCount)))"
-            + " sentRMS=\(String(format: "%.5f", pendingEncodedRMS / Double(meterCount)))"
-            + " gain=\(String(format: "%.2f", pendingGain / Double(meterCount)))"
-        )
-        try await commitAudioBuffer()
-        pendingAudioSeconds = 0
-        pendingSourceRMS = 0
-        pendingEncodedRMS = 0
-        pendingGain = 0
-        pendingMeterCount = 0
-      }
-
-      if Self.shouldRotateRealtimeSession(afterAudioSeconds: sessionAudioSeconds)
-        || startedAt.duration(to: .now) >= .seconds(Int(Self.proactiveRealtimeSessionRotationSeconds))
-      {
-        if pendingAudioSeconds >= 0.2 {
-          log("rotation commit session=\(sessionIndex) pendingSeconds=\(String(format: "%.2f", pendingAudioSeconds))")
+        pendingAudioSeconds += Self.durationSeconds(of: input.buffer)
+        sessionAudioSeconds += Self.durationSeconds(of: input.buffer)
+        pendingSourceRMS += rms
+        pendingEncodedRMS += audio.rms
+        pendingGain += audio.gain
+        pendingMeterCount += 1
+        if pendingAudioSeconds >= Self.commitIntervalSeconds {
+          commitCount += 1
+          let meterCount = max(1, pendingMeterCount)
+          log(
+            "commit #\(commitCount) after append #\(appendCount) seconds=\(String(format: "%.2f", pendingAudioSeconds))"
+              + " sourceRMS=\(String(format: "%.5f", pendingSourceRMS / Double(meterCount)))"
+              + " sentRMS=\(String(format: "%.5f", pendingEncodedRMS / Double(meterCount)))"
+              + " gain=\(String(format: "%.2f", pendingGain / Double(meterCount)))"
+          )
           try await commitAudioBuffer()
+          pendingAudioSeconds = 0
+          pendingSourceRMS = 0
+          pendingEncodedRMS = 0
+          pendingGain = 0
+          pendingMeterCount = 0
         }
-        return SessionAudioResult(shouldRotate: true, audioSecondsSent: sessionAudioSeconds)
+
+        if Self.shouldRotateRealtimeSession(afterAudioSeconds: sessionAudioSeconds)
+          || Self.shouldRotateRealtimeSession(afterWallClockDuration: startedAt.duration(to: .now))
+        {
+          if pendingAudioSeconds >= 0.2 {
+            log("rotation commit session=\(sessionIndex) pendingSeconds=\(String(format: "%.2f", pendingAudioSeconds))")
+            try await commitAudioBuffer()
+          }
+          return SessionAudioResult(shouldRotate: true, audioSecondsSent: sessionAudioSeconds)
+        }
+      } catch {
+        if shouldRecoverSessionAfterConnectionClose(
+          error,
+          startedAt: startedAt,
+          sessionAudioSeconds: sessionAudioSeconds,
+          sessionIndex: sessionIndex
+        ) {
+          return SessionAudioResult(shouldRotate: true, audioSecondsSent: sessionAudioSeconds)
+        }
+        throw error
       }
     }
 
@@ -526,6 +551,27 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
       || description.contains("realtime transcription connection is not open")
       || description.contains("session_expired")
       || description.contains("maximum duration")
+  }
+
+  private func shouldRecoverSessionAfterConnectionClose(
+    _ error: Error,
+    startedAt: ContinuousClock.Instant,
+    sessionAudioSeconds: Double,
+    sessionIndex: Int
+  ) -> Bool {
+    guard isExpectedConnectionCloseError(error) else {
+      return false
+    }
+
+    guard Self.shouldRecoverRealtimeSessionAfterConnectionClose(
+      wallClockDuration: startedAt.duration(to: .now),
+      audioSeconds: sessionAudioSeconds
+    ) else {
+      return false
+    }
+
+    log("rotating realtime session=\(sessionIndex) after connection close reason=\(error.localizedDescription)")
+    return true
   }
 
   private static func encodedPCM16Audio(from buffer: AVAudioPCMBuffer) -> EncodedAudio? {
