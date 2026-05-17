@@ -422,6 +422,45 @@ public enum TranscriptionQualityMode: String, Codable, Sendable, Hashable, CaseI
   }
 }
 
+public enum TranscriptionLanguageMode: String, Codable, Sendable, Hashable, CaseIterable {
+  case automatic
+  case chineseSimplified
+  case englishUS
+
+  public var displayName: String {
+    switch self {
+    case .automatic:
+      return "Auto"
+    case .chineseSimplified:
+      return "中文"
+    case .englishUS:
+      return "English"
+    }
+  }
+
+  public var localeIdentifier: String? {
+    switch self {
+    case .automatic:
+      return nil
+    case .chineseSimplified:
+      return "zh_CN"
+    case .englishUS:
+      return "en_US"
+    }
+  }
+
+  public var realtimeLanguageCode: String? {
+    switch self {
+    case .automatic:
+      return nil
+    case .chineseSimplified:
+      return "zh"
+    case .englishUS:
+      return "en"
+    }
+  }
+}
+
 public enum MeetingStatus: String, Codable, Sendable, Hashable {
   case idle
   case preparing
@@ -530,6 +569,9 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
   public var model: String?
   public var transcriptionProvider: String?
   public var transcriptionModel: String?
+  public var transcriptionLanguageMode: String?
+  public var resolvedTranscriptionLocale: String?
+  public var languageDetectionConfidence: Double?
   public var liveTranscript: String
   public var correctedTranscript: String?
   public var transcriptChunks: [TranscriptChunk]
@@ -565,6 +607,9 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
     model: String? = nil,
     transcriptionProvider: String? = nil,
     transcriptionModel: String? = nil,
+    transcriptionLanguageMode: String? = nil,
+    resolvedTranscriptionLocale: String? = nil,
+    languageDetectionConfidence: Double? = nil,
     liveTranscript: String = "",
     correctedTranscript: String? = nil,
     transcriptChunks: [TranscriptChunk] = [],
@@ -599,6 +644,9 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
     self.model = model
     self.transcriptionProvider = transcriptionProvider
     self.transcriptionModel = transcriptionModel
+    self.transcriptionLanguageMode = transcriptionLanguageMode
+    self.resolvedTranscriptionLocale = resolvedTranscriptionLocale
+    self.languageDetectionConfidence = languageDetectionConfidence
     self.liveTranscript = liveTranscript
     self.correctedTranscript = correctedTranscript
     self.transcriptChunks = transcriptChunks

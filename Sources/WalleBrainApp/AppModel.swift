@@ -45,9 +45,15 @@ final class AppModel: ObservableObject {
       UserDefaults.standard.set(transcriptionQualityMode.rawValue, forKey: Self.transcriptionQualityModeDefaultsKey)
     }
   }
+  @Published var transcriptionLanguageMode: TranscriptionLanguageMode = .automatic {
+    didSet {
+      UserDefaults.standard.set(transcriptionLanguageMode.rawValue, forKey: Self.transcriptionLanguageModeDefaultsKey)
+    }
+  }
 
   private let paths = RuntimePaths()
   private static let transcriptionQualityModeDefaultsKey = "WalleBrain.TranscriptionQualityMode"
+  private static let transcriptionLanguageModeDefaultsKey = "WalleBrain.TranscriptionLanguageMode"
   private var liveCoordinator: LiveMeetingCoordinator
   private var activeLiveSessionID: UUID?
   private var selectedSessionID: UUID?
@@ -61,6 +67,9 @@ final class AppModel: ObservableObject {
     transcriptionQualityMode = TranscriptionQualityMode(
       rawValue: UserDefaults.standard.string(forKey: Self.transcriptionQualityModeDefaultsKey) ?? ""
     ) ?? .local
+    transcriptionLanguageMode = TranscriptionLanguageMode(
+      rawValue: UserDefaults.standard.string(forKey: Self.transcriptionLanguageModeDefaultsKey) ?? ""
+    ) ?? .automatic
     liveCoordinator = LiveMeetingCoordinator(paths: paths) { _ in }
     liveCoordinator = LiveMeetingCoordinator(
       paths: paths,
@@ -265,9 +274,8 @@ final class AppModel: ObservableObject {
       let store = MeetingSessionStore(paths: paths)
       let sessions = try await store.listSessions()
       let visibleSessions = sessions.filter { !isHiddenTestSession($0) }
-      let limitedSessions = Array(visibleSessions.prefix(12))
-      recentSessions = limitedSessions
-      if currentSession == nil, let first = limitedSessions.first,
+      recentSessions = visibleSessions
+      if currentSession == nil, let first = visibleSessions.first,
         [.preparing, .recording, .processing].contains(first.status)
       {
         applySession(first)
@@ -395,7 +403,8 @@ final class AppModel: ObservableObject {
         title: meetingTitle,
         mode: selectedMode,
         preferredInputID: selectedInputID,
-        transcriptionMode: effectiveTranscriptionQualityMode
+        transcriptionMode: effectiveTranscriptionQualityMode,
+        languageMode: transcriptionLanguageMode
       )
     } catch {
       handleMeetingStartError(error)
@@ -783,10 +792,6 @@ final class AppModel: ObservableObject {
         return left.id.uuidString > right.id.uuidString
       }
       return left.startedAt > right.startedAt
-    }
-
-    if recentSessions.count > 12 {
-      recentSessions = Array(recentSessions.prefix(12))
     }
   }
 

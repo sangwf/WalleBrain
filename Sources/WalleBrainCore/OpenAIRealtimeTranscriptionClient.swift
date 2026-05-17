@@ -132,6 +132,7 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
   public func run(
     stream: AsyncStream<AnalyzerInput>,
     prompt: String,
+    languageCode: String? = nil,
     onTranscript: @escaping @Sendable (RealtimeTranscriptionResult) async -> Void
   ) async throws {
     var audioIterator = stream.makeAsyncIterator()
@@ -144,6 +145,7 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
       let result = try await runRealtimeSession(
         audioIterator: &audioIterator,
         prompt: prompt,
+        languageCode: languageCode,
         sessionIndex: sessionIndex,
         onTranscript: onTranscript
       )
@@ -178,12 +180,14 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
   private func runRealtimeSession(
     audioIterator: inout AsyncStream<AnalyzerInput>.Iterator,
     prompt: String,
+    languageCode: String?,
     sessionIndex: Int,
     onTranscript: @escaping @Sendable (RealtimeTranscriptionResult) async -> Void
   ) async throws -> SessionAudioResult {
     let clientSecret = try await Self.createClientSecret(
       configuration: configuration,
       prompt: prompt,
+      languageCode: languageCode,
       networkPolicy: networkPolicy
     )
     resetPerConnectionState()
@@ -696,6 +700,7 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
   private static func createClientSecret(
     configuration: RealtimeTranscriptionConfiguration,
     prompt: String,
+    languageCode: String? = nil,
     networkPolicy: NetworkTransportPolicy
   ) async throws -> ClientSecretResult {
     guard let url = URL(string: "https://api.openai.com/v1/realtime/client_secrets") else {
@@ -704,8 +709,10 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
 
     var transcription: [String: Any] = [
       "model": configuration.model,
-      "language": "zh",
     ]
+    if let languageCode {
+      transcription["language"] = languageCode
+    }
     let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedPrompt.isEmpty, supportsPrompt(model: configuration.model) {
       transcription["prompt"] = trimmedPrompt
