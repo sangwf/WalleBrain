@@ -36,6 +36,40 @@ public enum TranscriptionEvaluationMetrics {
     normalizeTextForComparison(expected) == normalizeTextForComparison(actual)
   }
 
+  /// Dictionary-term mentions in the reference, and how many of them the hypothesis reproduced
+  /// (per term, capped at the reference count so extra insertions do not inflate recall).
+  public static func termMentionCounts(
+    expected: String,
+    actual: String,
+    terms: [String]
+  ) -> (expected: Int, matched: Int) {
+    let normalizedExpected = normalizeTextForComparison(expected)
+    let normalizedActual = normalizeTextForComparison(actual)
+    var expectedCount = 0
+    var matchedCount = 0
+    var seen = Set<String>()
+
+    // Longer terms first, consuming their spans, so `张俊峰` is not also counted as `俊峰`.
+    var remainingExpected = normalizedExpected
+    var remainingActual = normalizedActual
+    for term in terms.map(normalizeTextForComparison).sorted(by: { $0.count > $1.count }) {
+      guard !term.isEmpty, seen.insert(term).inserted else {
+        continue
+      }
+      let inExpected = occurrences(of: term, in: remainingExpected)
+      let inActual = occurrences(of: term, in: remainingActual)
+      expectedCount += inExpected
+      matchedCount += min(inExpected, inActual)
+      remainingExpected = remainingExpected.replacingOccurrences(of: term, with: "\u{0}")
+      remainingActual = remainingActual.replacingOccurrences(of: term, with: "\u{0}")
+    }
+    return (expectedCount, matchedCount)
+  }
+
+  private static func occurrences(of term: String, in text: String) -> Int {
+    text.components(separatedBy: term).count - 1
+  }
+
   private static func levenshteinDistance(_ left: [Character], _ right: [Character]) -> Int {
     if left == right {
       return 0

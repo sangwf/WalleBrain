@@ -49,6 +49,8 @@ private struct ProviderSampleResult: Codable {
   let characterErrorRate: Double
   let characterAccuracy: Double
   let isExactMatch: Bool
+  let expectedTermMentions: Int
+  let matchedTermMentions: Int
   let error: String?
 }
 
@@ -60,12 +62,17 @@ private struct ProviderSummary: Codable {
   let averageCharacterErrorRate: Double
   let averageCharacterAccuracy: Double
   let exactMatchRate: Double
+  let expectedTermMentions: Int
+  let matchedTermMentions: Int
+  let termRecall: Double?
 }
 
 private struct BenchmarkReport: Codable {
   let generatedAt: String
   let manifestPath: String
   let languageMode: String
+  let dictionaryPath: String?
+  let appliesDictionaryBias: Bool
   let providers: [String]
   let sampleCount: Int
   let summaries: [ProviderSummary]
@@ -80,6 +87,8 @@ private struct ParsedArguments {
   var languageMode: TranscriptionLanguageMode = .chineseSimplified
   var sampleTimeoutSeconds: Double = 75
   var realtimeFinalDrainSeconds: Double = 6
+  var dictionaryPath: String?
+  var appliesDictionaryBias = true
 }
 
 private final class AudioBufferBox: @unchecked Sendable {
@@ -136,6 +145,13 @@ struct WalleBrainTranscriptionBenchmark {
       let samples = try loadSamples(from: manifestURL)
       let selectedSamples = args.limit.map { Array(samples.prefix($0)) } ?? samples
       let providers = try selectedProviders(from: args.providerSelection)
+      let dictionaryURL = args.dictionaryPath.map {
+        URL(fileURLWithPath: $0, relativeTo: projectRootURL()).standardizedFileURL
+      }
+      let vocabulary = try dictionaryURL.map {
+        LiveSpeechVocabulary(dictionary: try TermDictionaryStore.parse(markdown: String(contentsOf: $0, encoding: .utf8)))
+      } ?? .empty
+      let recognitionVocabulary = args.appliesDictionaryBias ? vocabulary : .empty
       let generatedAt = ISO8601DateFormatter().string(from: Date())
 
       var results: [ProviderSampleResult] = []
@@ -150,6 +166,8 @@ struct WalleBrainTranscriptionBenchmark {
             audioURL: audioURL,
             provider: provider,
             languageMode: args.languageMode,
+            vocabulary: recognitionVocabulary,
+            termVocabulary: vocabulary,
             timeoutSeconds: args.sampleTimeoutSeconds,
             realtimeFinalDrainSeconds: args.realtimeFinalDrainSeconds
           )
@@ -161,6 +179,8 @@ struct WalleBrainTranscriptionBenchmark {
         generatedAt: generatedAt,
         manifestPath: manifestURL.path(percentEncoded: false),
         languageMode: args.languageMode.rawValue,
+        dictionaryPath: dictionaryURL?.path(percentEncoded: false),
+        appliesDictionaryBias: args.appliesDictionaryBias && dictionaryURL != nil,
         providers: providers.map(\.rawValue),
         sampleCount: selectedSamples.count,
         summaries: providers.map { summary(for: $0, in: results) },
@@ -190,6 +210,8 @@ struct WalleBrainTranscriptionBenchmark {
     audioURL: URL,
     provider: BenchmarkProvider,
     languageMode: TranscriptionLanguageMode,
+    vocabulary: LiveSpeechVocabulary,
+    termVocabulary: LiveSpeechVocabulary,
     timeoutSeconds: Double,
     realtimeFinalDrainSeconds: Double
   ) async -> ProviderSampleResult {
@@ -201,7 +223,7 @@ struct WalleBrainTranscriptionBenchmark {
       switch provider {
       case .appleSpeech:
         (transcript, model) = try await withTimeout(seconds: timeoutSeconds) {
-          try await transcribeWithAppleSpeech(audioURL: audioURL, languageMode: languageMode)
+          try await transcribeWithAppleSpeech(audioURL: audioURL, languageMode: languageMode, vocabulary: vocabulary)
         }
       case .openAIRealtime:
         (transcript, model) = try await withTimeout(seconds: timeoutSeconds) {
@@ -221,6 +243,11 @@ struct WalleBrainTranscriptionBenchmark {
 
     let normalizedExpected = TranscriptionEvaluationMetrics.normalizeTextForComparison(sample.expectedTranscript)
     let normalizedActual = TranscriptionEvaluationMetrics.normalizeTextForComparison(transcript)
+    let termMentions = TranscriptionEvaluationMetrics.termMentionCounts(
+      expected: sample.expectedTranscript,
+      actual: transcript,
+      terms: termVocabulary.dictionary.allTerms
+    )
     return ProviderSampleResult(
       sampleID: sample.id,
       source: sample.source,
@@ -243,13 +270,16 @@ struct WalleBrainTranscriptionBenchmark {
         expected: sample.expectedTranscript,
         actual: transcript
       ),
+      expectedTermMentions: termMentions.expected,
+      matchedTermMentions: termMentions.matched,
       error: errorMessage
     )
   }
 
   private static func transcribeWithAppleSpeech(
     audioURL: URL,
-    languageMode: TranscriptionLanguageMode
+    languageMode: TranscriptionLanguageMode,
+    vocabulary: LiveSpeechVocabulary
   ) async throws -> (transcript: String, model: String) {
     let localeIdentifier = languageMode.localeIdentifier ?? "zh_CN"
     let requestedLocale = Locale(identifier: localeIdentifier)
@@ -265,6 +295,12 @@ struct WalleBrainTranscriptionBenchmark {
     let stream = try audioStream(from: audioURL, targetFormat: analyzerFormat)
     let analyzer = SpeechAnalyzer(modules: [transcriber])
     try await analyzer.prepareToAnalyze(in: analyzerFormat)
+    // Mirror the live path: contextual strings on the analyzer, term repair on each result.
+    if !vocabulary.contextualStrings.isEmpty {
+      let context = AnalysisContext()
+      context.contextualStrings[.general] = vocabulary.contextualStrings
+      try await analyzer.setContext(context)
+    }
     let collector = Task { () throws -> [ProviderTranscriptChunk] in
       var chunks: [ProviderTranscriptChunk] = []
       for try await result in transcriber.results {
@@ -275,7 +311,7 @@ struct WalleBrainTranscriptionBenchmark {
           id: id,
           startSeconds: startSeconds,
           durationSeconds: durationSeconds,
-          text: String(result.text.characters)
+          text: vocabulary.termRepair.apply(to: String(result.text.characters))
         )
         chunks = mergedProviderChunks(chunks, with: chunk)
       }
@@ -285,7 +321,8 @@ struct WalleBrainTranscriptionBenchmark {
     try await analyzer.start(inputSequence: stream)
     try await analyzer.finalizeAndFinishThroughEndOfInput()
     let chunks = try await collector.value
-    return (liveTranscript(from: chunks), "SpeechTranscriber")
+    let model = vocabulary.contextualStrings.isEmpty ? "SpeechTranscriber" : "SpeechTranscriber + dictionary"
+    return (liveTranscript(from: chunks), model)
   }
 
   private static func transcribeWithOpenAIRealtime(
@@ -474,6 +511,8 @@ struct WalleBrainTranscriptionBenchmark {
     let providerResults = results.filter { $0.provider == provider.displayName }
     let successful = providerResults.filter { $0.error == nil }
     let model = providerResults.first?.model ?? provider.modelName
+    let expectedTerms = successful.map(\.expectedTermMentions).reduce(0, +)
+    let matchedTerms = successful.map(\.matchedTermMentions).reduce(0, +)
     return ProviderSummary(
       provider: provider.displayName,
       model: model,
@@ -481,7 +520,10 @@ struct WalleBrainTranscriptionBenchmark {
       failedSampleCount: providerResults.count - successful.count,
       averageCharacterErrorRate: average(successful.map(\.characterErrorRate)),
       averageCharacterAccuracy: average(successful.map(\.characterAccuracy)),
-      exactMatchRate: ratio(successful.map(\.isExactMatch))
+      exactMatchRate: ratio(successful.map(\.isExactMatch)),
+      expectedTermMentions: expectedTerms,
+      matchedTermMentions: matchedTerms,
+      termRecall: expectedTerms > 0 ? Double(matchedTerms) / Double(expectedTerms) : nil
     )
   }
 
@@ -577,6 +619,15 @@ struct WalleBrainTranscriptionBenchmark {
         }
         parsed.realtimeFinalDrainSeconds = seconds
         index += 2
+      case "--dictionary":
+        guard let next else {
+          throw WalleBrainError.invalidResponse("--dictionary requires a Business Dictionary markdown path.")
+        }
+        parsed.dictionaryPath = next
+        index += 2
+      case "--measure-terms-only":
+        parsed.appliesDictionaryBias = false
+        index += 1
       case "--help", "-h":
         printUsage()
         exit(0)
@@ -631,12 +682,12 @@ struct WalleBrainTranscriptionBenchmark {
 
   private static func markdownSummary(_ report: BenchmarkReport) -> String {
     var lines = [
-      "| Provider | Samples | Failed | Avg CER | Avg Accuracy | Exact Match |",
-      "|---|---:|---:|---:|---:|---:|",
+      "| Provider | Samples | Failed | Avg CER | Avg Accuracy | Exact Match | Term Recall |",
+      "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for summary in report.summaries {
       lines.append(
-        "| \(summary.provider) | \(summary.sampleCount) | \(summary.failedSampleCount) | \(percent(summary.averageCharacterErrorRate)) | \(percent(summary.averageCharacterAccuracy)) | \(percent(summary.exactMatchRate)) |"
+        "| \(summary.provider) | \(summary.sampleCount) | \(summary.failedSampleCount) | \(percent(summary.averageCharacterErrorRate)) | \(percent(summary.averageCharacterAccuracy)) | \(percent(summary.exactMatchRate)) | \(termRecallLabel(summary)) |"
       )
     }
     return lines.joined(separator: "\n")
@@ -649,6 +700,7 @@ struct WalleBrainTranscriptionBenchmark {
       "- Generated: \(report.generatedAt)",
       "- Manifest: `\(report.manifestPath)`",
       "- Language: `\(report.languageMode)`",
+      "- Dictionary: \(report.dictionaryPath.map { "`\($0)`" } ?? "none") (bias \(report.appliesDictionaryBias ? "applied" : "not applied"))",
       "",
       markdownSummary(report),
       "",
@@ -668,6 +720,13 @@ struct WalleBrainTranscriptionBenchmark {
     return lines.joined(separator: "\n")
   }
 
+  private static func termRecallLabel(_ summary: ProviderSummary) -> String {
+    guard let recall = summary.termRecall else {
+      return "-"
+    }
+    return "\(percent(recall)) (\(summary.matchedTermMentions)/\(summary.expectedTermMentions))"
+  }
+
   private static func percent(_ value: Double) -> String {
     String(format: "%.1f%%", value * 100)
   }
@@ -681,10 +740,12 @@ struct WalleBrainTranscriptionBenchmark {
   private static func printUsage() {
     print("""
     Usage:
-      WalleBrainTranscriptionBenchmark [--manifest fixtures/datasets/manifest.jsonl] [--provider both|apple-speech|openai-realtime] [--language zh|en|auto] [--limit N] [--sample-timeout 75] [--realtime-final-drain 6] [--output-dir runtime/evaluations]
+      WalleBrainTranscriptionBenchmark [--manifest fixtures/datasets/manifest.jsonl] [--provider both|apple-speech|openai-realtime] [--language zh|en|auto] [--limit N] [--sample-timeout 75] [--realtime-final-drain 6] [--dictionary "runtime/native/Dictionary/Business Dictionary.md" [--measure-terms-only]] [--output-dir runtime/evaluations]
 
     Notes:
       - openai-realtime requires OPENAI_API_KEY.
+      - --dictionary applies the live vocabulary (contextual strings + term repair) to apple-speech and reports term recall.
+      - --measure-terms-only reports term recall for the dictionary without applying it (the "before" baseline).
       - apple-speech requires macOS Speech recognition permission; run from an app bundle if TCC rejects a raw CLI.
     """)
   }

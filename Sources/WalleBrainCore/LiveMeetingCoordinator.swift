@@ -8,7 +8,6 @@ public actor LiveMeetingCoordinator {
   private let paths: RuntimePaths
   private let permissionCoordinator = PermissionCoordinator()
   private let dictionaryStore: TermDictionaryStore
-  private let compiler: CustomLanguageModelCompiler
   private let sessionStore: MeetingSessionStore
   private let postProcessor: MeetingPostProcessor
   private let microphoneRecorder = MicrophoneCaptureService()
@@ -38,6 +37,7 @@ public actor LiveMeetingCoordinator {
   private var lastLocalSpeechPersistAt: ContinuousClock.Instant?
   private var isStoppingMeeting = false
   private var activeInputID: String?
+  private var liveVocabulary = LiveSpeechVocabulary.empty
   private let liveDebugEnabled = ProcessInfo.processInfo.environment["WALLEBRAIN_DEBUG_LIVE"] == "1"
   private let liveDisableResultsTask = ProcessInfo.processInfo.environment["WALLEBRAIN_DISABLE_RESULTS_TASK"] == "1"
   private let liveDisableAnalyzerTask = ProcessInfo.processInfo.environment["WALLEBRAIN_DISABLE_ANALYZER_TASK"] == "1"
@@ -49,7 +49,6 @@ public actor LiveMeetingCoordinator {
   ) {
     self.paths = paths
     self.dictionaryStore = TermDictionaryStore(paths: paths)
-    self.compiler = CustomLanguageModelCompiler(paths: paths)
     self.sessionStore = MeetingSessionStore(paths: paths)
     self.postProcessor = MeetingPostProcessor(paths: paths)
     self.onUpdate = onUpdate
@@ -107,13 +106,14 @@ public actor LiveMeetingCoordinator {
       realtimeConfiguration = nil
     }
 
+    liveVocabulary = .empty
     if !isManualInput && effectiveTranscriptionMode == .local {
       let speechStatus = await permissionCoordinator.requestSpeechAccess()
       guard speechStatus == .authorized else {
         throw WalleBrainError.invalidResponse("Speech recognition access was denied.")
       }
 
-      _ = try await dictionaryStore.loadDictionary()
+      liveVocabulary = await loadLiveSpeechVocabulary()
     }
 
     let startedAt = Date()
@@ -230,7 +230,7 @@ public actor LiveMeetingCoordinator {
           debugLogURL: paths.nativeDirectory.appending(path: "realtime-debug.log", directoryHint: .notDirectory)
         )
         self.realtimeTranscriber = realtimeTranscriber
-        let dictionary = try await dictionaryStore.loadDictionary()
+        let dictionary = await loadLiveSpeechVocabulary().dictionary
         realtimeResultsTask = makeRealtimeResultsTask(
           transcriber: realtimeTranscriber,
           stream: meteredStream,
@@ -243,12 +243,11 @@ public actor LiveMeetingCoordinator {
         guard let transcriber, let resolvedLocalLocale else {
           throw WalleBrainError.invalidResponse("Local speech transcriber was not initialized.")
         }
-        try await prepareCustomLanguageAssets(for: resolvedLocalLocale)
-
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         await debug("analyzer-created")
         try await analyzer.prepareToAnalyze(in: capture.audioFormat)
         await debug("analyzer-prepared")
+        await applyContextualStrings(to: analyzer, locale: resolvedLocalLocale)
         self.analyzer = analyzer
 
         if liveDisableAnalyzerTask {
@@ -376,7 +375,7 @@ public actor LiveMeetingCoordinator {
     let startSeconds = result.range.start.seconds.isFinite ? result.range.start.seconds : 0
     let durationSeconds = result.range.duration.seconds.isFinite ? result.range.duration.seconds : 0
     let id = Self.chunkID(startSeconds: startSeconds, durationSeconds: durationSeconds)
-    let text = String(result.text.characters)
+    let text = liveVocabulary.termRepair.apply(to: String(result.text.characters))
     await debug("consume-text-ready")
     let chunk = TranscriptChunk(
       id: id,
@@ -751,10 +750,34 @@ public actor LiveMeetingCoordinator {
     return localTranscriber
   }
 
-  private func prepareCustomLanguageAssets(for locale: Locale) async throws {
-    let dictionary = try await dictionaryStore.loadDictionary()
-    let assets = try await compiler.compile(dictionary: dictionary, locale: locale)
-    _ = await compiler.configuration(for: assets)
+  /// The dictionary only improves recognition; a missing or malformed dictionary must never block recording.
+  private func loadLiveSpeechVocabulary() async -> LiveSpeechVocabulary {
+    do {
+      let vocabulary = LiveSpeechVocabulary(dictionary: try await dictionaryStore.loadDictionary())
+      await trace("speech vocabulary ready terms=\(vocabulary.contextualStrings.count) repairable=\(vocabulary.termRepair.targetCount)")
+      return vocabulary
+    } catch {
+      await trace("speech vocabulary unavailable error=\(error.localizedDescription); continuing without term bias")
+      return .empty
+    }
+  }
+
+  /// `SpeechTranscriber` exposes no custom language model hook; contextual strings are the only
+  /// recognizer-side bias the SDK offers. Best-effort: failure leaves recognition unbiased.
+  private func applyContextualStrings(to analyzer: SpeechAnalyzer, locale: Locale) async {
+    let strings = liveVocabulary.contextualStrings
+    guard !strings.isEmpty else {
+      return
+    }
+
+    let context = AnalysisContext()
+    context.contextualStrings[.general] = strings
+    do {
+      try await analyzer.setContext(context)
+      await trace("speech contextual strings applied count=\(strings.count) locale=\(locale.identifier)")
+    } catch {
+      await trace("speech contextual strings failed error=\(error.localizedDescription); continuing without them")
+    }
   }
 
   private func meteredStream(from source: AsyncStream<AnalyzerInput>) -> AsyncStream<AnalyzerInput> {

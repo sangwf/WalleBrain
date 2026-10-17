@@ -30,4 +30,16 @@ struct TranscriptionEvaluationMetricsTests {
 
     #expect(rate == 1)
   }
+
+  @Test
+  func countsDictionaryTermMentionsReproducedByTranscript() {
+    let counts = TranscriptionEvaluationMetrics.termMentionCounts(
+      expected: "神策的张俊峰说，神策 CRM 上线了",
+      actual: "神车的俊峰说，神策crm上线了，神策，神策",
+      terms: ["神策", "张俊峰", "俊峰", "CRM"]
+    )
+
+    #expect(counts.expected == 4)
+    #expect(counts.matched == 3)
+  }
 }

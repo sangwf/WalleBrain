@@ -69,7 +69,8 @@ Session Create → Recording → Live Transcription → Stop → Post-Processing
   - `MicrophoneCaptureService.swift` / `SystemAudioCaptureService.swift` / `MixedCaptureService.swift` — Three audio capture modes (mic-only, system audio, mixed).
   - `TranscriptAssembler.swift` — Merges overlapping speech recognition chunks into clean transcript.
   - `LLMChatClient.swift` — OpenAI-compatible LLM summarization using the configured `Models` list from settings, tried from left to right.
-  - `CustomLanguageModelCompiler.swift` / `TermDictionaryStore.swift` — Custom vocabulary for improving domain-specific speech recognition.
+  - `TermDictionaryStore.swift` / `SpeechVocabulary.swift` / `PhoneticTermRepair.swift` — Business Dictionary → live speech vocabulary. `SpeechTranscriber` has no custom-LM hook (contextual strings are applied but currently ignored), so dictionary terms are fixed live by a conservative pinyin near-homophone repair (e.g. `神车` → `神策`).
+  - `CustomLanguageModelCompiler.swift` — Compiles a cached `SFSpeechLanguageModel` (only usable by `DictationTranscriber`; not used in the live path because it raises general CER).
   - `NoteExporter.swift` — Generates Obsidian markdown with frontmatter.
   - `Models.swift` — All Swift model types (`NativeMeetingSession`, `MeetingMode`, `MeetingStatus`, etc.).
 - `WalleBrainApp` — SwiftUI app entry point with `GlobalHotkeyController` (double-tap Ctrl) and `AppModel`.
