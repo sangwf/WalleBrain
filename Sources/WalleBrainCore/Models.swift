@@ -391,6 +391,18 @@ public struct LLMPostProcessingResult: Sendable, Hashable {
   }
 }
 
+public struct OrganizedTranscriptResult: Sendable, Hashable {
+  public let provider: String
+  public let model: String
+  public let transcript: String
+
+  public init(provider: String, model: String, transcript: String) {
+    self.provider = provider
+    self.model = model
+    self.transcript = transcript
+  }
+}
+
 public struct SummaryRevisionResult: Sendable, Hashable {
   public let provider: String
   public let model: String
@@ -466,6 +478,7 @@ public enum MeetingStatus: String, Codable, Sendable, Hashable {
   case preparing
   case recording
   case processing
+  case organized
   case exported
   case failed
 }

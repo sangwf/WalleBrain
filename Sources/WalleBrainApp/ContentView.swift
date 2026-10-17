@@ -759,7 +759,7 @@ private struct MeetingWorkspaceView: View {
               await model.reprocessCurrentSession()
             }
           } label: {
-            Label(model.currentSession?.status == .failed ? "Retry AI" : "Regenerate AI", systemImage: "arrow.triangle.2.circlepath")
+            Label(reprocessButtonTitle, systemImage: "arrow.triangle.2.circlepath")
           }
           .buttonStyle(.bordered)
           .controlSize(.small)
@@ -820,6 +820,17 @@ private struct MeetingWorkspaceView: View {
           showsSummaryReviewSheet = true
         }
       )
+    }
+  }
+
+  private var reprocessButtonTitle: String {
+    switch model.currentSession?.status {
+    case .failed:
+      return "Retry AI"
+    case .organized:
+      return "Retry Summary"
+    default:
+      return "Regenerate AI"
     }
   }
 

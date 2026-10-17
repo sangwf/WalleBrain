@@ -2,19 +2,29 @@ import Foundation
 
 public actor MeetingPostProcessor {
   private let paths: RuntimePaths
+  private let client: (any MeetingPostProcessingClient)?
   private let dictionaryStore: TermDictionaryStore
   private let correctionMemoryStore: CorrectionMemoryStore
+  private let sessionStore: MeetingSessionStore
   private let exporter: NoteExporter
   private let correctionEngine = TranscriptCorrectionEngine()
 
-  public init(paths: RuntimePaths) {
+  public init(
+    paths: RuntimePaths,
+    client: (any MeetingPostProcessingClient)? = nil
+  ) {
     self.paths = paths
+    self.client = client
     self.dictionaryStore = TermDictionaryStore(paths: paths)
     self.correctionMemoryStore = CorrectionMemoryStore(paths: paths)
+    self.sessionStore = MeetingSessionStore(paths: paths)
     self.exporter = NoteExporter(paths: paths)
   }
 
-  public func process(_ session: NativeMeetingSession) async throws -> NativeMeetingSession {
+  public func process(
+    _ session: NativeMeetingSession,
+    reuseExistingOrganizedTranscript: Bool = false
+  ) async throws -> NativeMeetingSession {
     var session = session
     let dictionary = try await loadDictionary(for: session)
     let memoryEntries = (try? await correctionMemoryStore.load()) ?? []
@@ -28,10 +38,8 @@ public actor MeetingPostProcessor {
       : correctedTranscript
     session.correctedTranscript = effectiveTranscript
 
-    let result: LLMPostProcessingResult
-    let aiSucceeded: Bool
     if effectiveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      result = LLMPostProcessingResult(
+      let result = LLMPostProcessingResult(
         provider: "local",
         model: "empty-transcript",
         summary: "No speech was captured in this meeting.",
@@ -40,18 +48,100 @@ public actor MeetingPostProcessor {
         actionItems: [],
         openLoops: []
       )
-      aiSucceeded = true
-    } else {
-      do {
-        result = try await LLMChatClient().summarize(transcript: effectiveTranscript, dictionary: dictionary)
-        aiSucceeded = true
-      } catch {
-        result = fallbackResult(for: effectiveTranscript, error: error)
-        aiSucceeded = false
-        session.errorMessage = error.localizedDescription
-      }
+      return try await persist(
+        result: result,
+        status: .exported,
+        errorMessage: nil,
+        effectiveTranscript: effectiveTranscript,
+        session: session
+      )
     }
 
+    let postProcessingClient = try client ?? LLMChatClient()
+    let organizedResult: OrganizedTranscriptResult
+    if
+      reuseExistingOrganizedTranscript,
+      let existingOrganizedTranscript = session.organizedTranscript?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      !existingOrganizedTranscript.isEmpty,
+      (try? OrganizedTranscriptQualityValidator.validate(
+        organizedTranscript: existingOrganizedTranscript,
+        sourceTranscript: effectiveTranscript
+      )) != nil
+    {
+      organizedResult = OrganizedTranscriptResult(
+        provider: session.provider ?? "OpenAI-compatible",
+        model: session.model ?? "existing-organized-transcript",
+        transcript: existingOrganizedTranscript
+      )
+    } else {
+      do {
+        organizedResult = try await postProcessingClient.organizeTranscript(
+          transcript: effectiveTranscript,
+          dictionary: dictionary
+        )
+      } catch {
+        return try await persist(
+          result: fallbackResult(for: effectiveTranscript, error: error),
+          status: .failed,
+          errorMessage: error.localizedDescription,
+          effectiveTranscript: effectiveTranscript,
+          session: session
+        )
+      }
+    }
+    try OrganizedTranscriptQualityValidator.validate(
+      organizedTranscript: organizedResult.transcript,
+      sourceTranscript: effectiveTranscript
+    )
+
+    let organizedCheckpoint = LLMPostProcessingResult(
+      provider: organizedResult.provider,
+      model: organizedResult.model,
+      summary: "整理稿已生成；结构化摘要与要点正在等待生成。",
+      organizedTranscript: organizedResult.transcript,
+      keyPoints: [],
+      actionItems: []
+    )
+    session = try await persist(
+      result: organizedCheckpoint,
+      status: .organized,
+      errorMessage: nil,
+      effectiveTranscript: effectiveTranscript,
+      session: session
+    )
+
+    do {
+      let analysisResult = try await postProcessingClient.analyzeOrganizedTranscript(
+        organizedResult.transcript,
+        preferredModel: organizedResult.model
+      )
+      return try await persist(
+        result: analysisResult,
+        status: .exported,
+        errorMessage: nil,
+        effectiveTranscript: effectiveTranscript,
+        session: session
+      )
+    } catch {
+      return try await persist(
+        result: organizedCheckpoint,
+        status: .organized,
+        errorMessage: "Structured analysis pending: \(error.localizedDescription)",
+        effectiveTranscript: effectiveTranscript,
+        session: session
+      )
+    }
+  }
+
+  private func persist(
+    result: LLMPostProcessingResult,
+    status: MeetingStatus,
+    errorMessage: String?,
+    effectiveTranscript: String,
+    session originalSession: NativeMeetingSession
+  ) async throws -> NativeMeetingSession {
+    var session = originalSession
     let notePath = try await exporter.export(
       note: NativeMeetingNote(
         title: session.title,
@@ -91,11 +181,10 @@ public actor MeetingPostProcessor {
     session.provider = result.provider
     session.model = result.model
     session.exportedNotePath = notePath.path(percentEncoded: false)
-    session.status = aiSucceeded ? .exported : .failed
-    if aiSucceeded {
-      session.errorMessage = nil
-    }
+    session.status = status
+    session.errorMessage = errorMessage
 
+    try await sessionStore.save(session)
     return session
   }
 

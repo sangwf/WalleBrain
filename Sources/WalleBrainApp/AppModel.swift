@@ -460,11 +460,13 @@ final class AppModel: ObservableObject {
       }
       try await liveCoordinator.stopMeetingAndProcess()
       resetAudioLevel()
-      if let session = currentSession, [.processing, .exported, .failed].contains(session.status) {
+      if let session = currentSession, [.processing, .organized, .exported, .failed].contains(session.status) {
         upsertRecentSession(session)
         switch session.status {
         case .processing:
           statusMessage = "Processing \(session.title) in background."
+        case .organized:
+          statusMessage = "Organized transcript ready; structured analysis can be retried."
         case .exported:
           statusMessage = "Exported \(session.title) via \(session.model ?? "local")."
         case .failed:
@@ -538,6 +540,8 @@ final class AppModel: ObservableObject {
 
       if session.status == .exported {
         statusMessage = "Regenerated notes via \(session.model ?? "local")."
+      } else if session.status == .organized {
+        statusMessage = "Organized transcript regenerated; structured analysis is still pending."
       } else {
         statusMessage = "AI post-process failed; exported a transcript-only note."
       }
@@ -550,6 +554,7 @@ final class AppModel: ObservableObject {
     guard !isMeetingActionInFlight, canReprocessCurrentSession, var session = currentSession else {
       return
     }
+    let reuseExistingOrganizedTranscript = session.status == .organized
 
     isMeetingActionInFlight = true
     defer { isMeetingActionInFlight = false }
@@ -562,7 +567,10 @@ final class AppModel: ObservableObject {
       statusMessage = "Retrying AI post-processing for \(session.title)."
       try await MeetingSessionStore(paths: paths).save(session)
 
-      session = try await MeetingPostProcessor(paths: paths).process(session)
+      session = try await MeetingPostProcessor(paths: paths).process(
+        session,
+        reuseExistingOrganizedTranscript: reuseExistingOrganizedTranscript
+      )
       currentSession = session
       upsertRecentSession(session)
       lastExportPath = session.exportedNotePath ?? lastExportPath
@@ -571,6 +579,8 @@ final class AppModel: ObservableObject {
 
       if session.status == .exported {
         statusMessage = "Regenerated notes via \(session.model ?? "local")."
+      } else if session.status == .organized {
+        statusMessage = "Organized transcript is ready; structured analysis still needs another retry."
       } else {
         statusMessage = "AI post-process failed again; kept a transcript-only note."
       }
@@ -744,6 +754,8 @@ final class AppModel: ObservableObject {
       return "Recording \(session.title) via \(session.selectedInput?.name ?? "unknown input")."
     case .processing:
       return "Processing \(session.title)..."
+    case .organized:
+      return "Organized transcript ready for \(session.title); structured analysis is pending."
     case .exported:
       return "Exported \(session.title) via \(session.model ?? "local")."
     case .failed:
@@ -757,7 +769,7 @@ final class AppModel: ObservableObject {
       return "WalleBrain quit before this meeting was stopped. The partial transcript and audio were preserved."
     case .processing:
       return "WalleBrain quit while AI post-processing was running. The transcript was preserved; use Retry AI to regenerate notes."
-    case .idle, .exported, .failed:
+    case .idle, .organized, .exported, .failed:
       return "WalleBrain quit before this meeting completed."
     }
   }
@@ -1152,7 +1164,7 @@ final class AppModel: ObservableObject {
       return false
     }
 
-    return [.exported, .failed].contains(currentSession.status)
+    return [.organized, .exported, .failed].contains(currentSession.status)
       && !currentSession.liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
@@ -1162,7 +1174,7 @@ final class AppModel: ObservableObject {
     }
 
     return activeLiveSessionID != currentSession.id
-      && [.exported, .failed].contains(currentSession.status)
+      && [.organized, .exported, .failed].contains(currentSession.status)
       && !currentSession.liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 

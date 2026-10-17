@@ -27,11 +27,49 @@ public actor LLMChatClient {
   }
 
   public func summarize(transcript: String, dictionary: TermDictionary) async throws -> LLMPostProcessingResult {
+    let organized = try await organizeTranscript(transcript: transcript, dictionary: dictionary)
+    return try await analyzeOrganizedTranscript(
+      organized.transcript,
+      preferredModel: organized.model
+    )
+  }
+
+  public func organizeTranscript(
+    transcript: String,
+    dictionary: TermDictionary
+  ) async throws -> OrganizedTranscriptResult {
     var lastError: Error?
 
-    for model in modelChain {
+    for model in cleanupModelOrder(for: transcript) {
       do {
-        return try await summarize(transcript: transcript, dictionary: dictionary, model: model)
+        return try await organizeTranscript(
+          transcript: transcript,
+          dictionary: dictionary,
+          model: model
+        )
+      } catch {
+        lastError = error
+      }
+    }
+
+    throw lastError ?? WalleBrainError.invalidResponse("No LLM model succeeded.")
+  }
+
+  public func analyzeOrganizedTranscript(
+    _ transcript: String,
+    preferredModel: String? = nil
+  ) async throws -> LLMPostProcessingResult {
+    var lastError: Error?
+    let orderedModels = preferredModel.map {
+      [$0] + modelChain.filter { $0 != preferredModel }
+    } ?? modelChain
+
+    for model in orderedModels {
+      do {
+        return try await analyzeTranscript(
+          transcript.trimmingCharacters(in: .whitespacesAndNewlines),
+          model: model
+        )
       } catch {
         lastError = error
       }
@@ -44,20 +82,7 @@ public actor LLMChatClient {
     _ transcript: String,
     dictionary: TermDictionary
   ) async throws -> LLMPostProcessingResult {
-    var lastError: Error?
-
-    for model in modelChain {
-      do {
-        return try await analyzeTranscript(
-          transcript.trimmingCharacters(in: .whitespacesAndNewlines),
-          model: model
-        )
-      } catch {
-        lastError = error
-      }
-    }
-
-    throw lastError ?? WalleBrainError.invalidResponse("No LLM model succeeded.")
+    try await analyzeOrganizedTranscript(transcript)
   }
 
   public func testConnection() async throws -> LLMPostProcessingResult {
@@ -144,11 +169,11 @@ public actor LLMChatClient {
     throw lastError ?? WalleBrainError.invalidResponse("No LLM model succeeded.")
   }
 
-  private func summarize(
+  private func organizeTranscript(
     transcript: String,
     dictionary: TermDictionary,
-    model: String,
-  ) async throws -> LLMPostProcessingResult {
+    model: String
+  ) async throws -> OrganizedTranscriptResult {
     let glossary = glossaryText(from: dictionary)
 
     // --- Pass 1: Transcript cleanup only ---
@@ -201,9 +226,19 @@ public actor LLMChatClient {
       maxTokens: 65536
     )
 
-    return try await analyzeTranscript(
-      cleanedTranscript.trimmingCharacters(in: .whitespacesAndNewlines),
-      model: model
+    let organizedTranscript = cleanedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !organizedTranscript.isEmpty else {
+      throw WalleBrainError.invalidResponse("Transcript cleanup returned empty text.")
+    }
+    try OrganizedTranscriptQualityValidator.validate(
+      organizedTranscript: organizedTranscript,
+      sourceTranscript: transcript
+    )
+
+    return OrganizedTranscriptResult(
+      provider: providerLabel,
+      model: model,
+      transcript: organizedTranscript
     )
   }
 
@@ -325,11 +360,19 @@ public actor LLMChatClient {
       model: model,
       systemPrompt: "You output strict JSON only.",
       userPrompt: analysisPrompt,
-      maxTokens: 4096
+      maxTokens: 8192
     )
 
     let jsonText = try Self.extractJSON(from: analysisContent)
-    let decoded = try Self.decodeAnalysisEnvelope(from: jsonText)
+    let decoded: AnalysisEnvelope
+    do {
+      decoded = try Self.decodeAnalysisEnvelope(from: jsonText)
+    } catch {
+      decoded = try await repairAnalysisEnvelope(
+        invalidContent: analysisContent,
+        model: model
+      )
+    }
 
     let filteredDecisions = filterDecisions(decoded.decisions, sourceTranscript: transcript)
 
@@ -404,6 +447,43 @@ public actor LLMChatClient {
         )
       }
     )
+  }
+
+  private func repairAnalysisEnvelope(
+    invalidContent: String,
+    model: String
+  ) async throws -> AnalysisEnvelope {
+    let repairPrompt = """
+    Repair the following malformed meeting-analysis response into strict JSON.
+    Preserve its supported facts and use empty arrays for missing list fields.
+    Output JSON only, with exactly these top-level fields:
+    summary, keyPoints, actionItems, decisions, openLoops, risks,
+    participantPositions, projectLinks, relatedPeople.
+
+    Malformed response:
+    \(invalidContent)
+    """
+
+    let repairedContent = try await callCompletion(
+      model: model,
+      systemPrompt: "You repair malformed JSON. Output strict JSON only.",
+      userPrompt: repairPrompt,
+      maxTokens: 8192
+    )
+    let repairedJSON = try Self.extractJSON(from: repairedContent)
+    return try Self.decodeAnalysisEnvelope(from: repairedJSON)
+  }
+
+  private func cleanupModelOrder(for transcript: String) -> [String] {
+    guard transcript.count >= 4_000 else {
+      return modelChain
+    }
+
+    let proModels = modelChain.filter { $0.localizedCaseInsensitiveContains("pro") }
+    guard !proModels.isEmpty else {
+      return modelChain
+    }
+    return proModels + modelChain.filter { !proModels.contains($0) }
   }
 
   private func reviseSummary(
