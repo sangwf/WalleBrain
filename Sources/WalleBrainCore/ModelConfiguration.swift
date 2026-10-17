@@ -1,5 +1,25 @@
 import Foundation
 
+public enum PostProcessingBackend: String, Codable, Sendable, Hashable, CaseIterable, Identifiable {
+  /// Local Codex CLI (`codex exec`), falling back to the OpenAI-compatible API when it is unusable.
+  case codex
+  /// OpenAI-compatible API only.
+  case api
+
+  public static let `default`: PostProcessingBackend = .codex
+
+  public var id: String { rawValue }
+
+  public var displayName: String {
+    switch self {
+    case .codex:
+      return "Codex (default)"
+    case .api:
+      return "API"
+    }
+  }
+}
+
 public struct ModelConfiguration: Codable, Sendable, Hashable {
   public static let defaultBaseURLReference = "$WALLEBRAIN_LLM_BASE_URL"
   public static let defaultAPIKeyReference = "$WALLEBRAIN_LLM_API_KEY"
@@ -12,17 +32,28 @@ public struct ModelConfiguration: Codable, Sendable, Hashable {
   public var apiKeyReference: String
   public var modelsReference: String
   public var providerLabelReference: String
+  public var postProcessingBackend: PostProcessingBackend
+  /// Optional explicit path to the `codex` binary. Empty means search the usual install locations.
+  public var codexExecutablePath: String
+  /// Optional `codex exec --model` override. Empty means use the Codex CLI's own default model.
+  public var codexModel: String
 
   public init(
     baseURLReference: String = ModelConfiguration.defaultBaseURLReference,
     apiKeyReference: String = ModelConfiguration.defaultAPIKeyReference,
     modelsReference: String = ModelConfiguration.defaultModelsReference,
-    providerLabelReference: String = ModelConfiguration.defaultProviderLabelReference
+    providerLabelReference: String = ModelConfiguration.defaultProviderLabelReference,
+    postProcessingBackend: PostProcessingBackend = .default,
+    codexExecutablePath: String = "",
+    codexModel: String = ""
   ) {
     self.baseURLReference = baseURLReference
     self.apiKeyReference = apiKeyReference
     self.modelsReference = modelsReference
     self.providerLabelReference = providerLabelReference
+    self.postProcessingBackend = postProcessingBackend
+    self.codexExecutablePath = codexExecutablePath
+    self.codexModel = codexModel
   }
 }
 
@@ -63,6 +94,9 @@ public struct ModelConfigurationStore {
     static let modelReference = "WalleBrain.ModelConfiguration.modelReference"
     static let modelsReference = "WalleBrain.ModelConfiguration.modelsReference"
     static let providerLabelReference = "WalleBrain.ModelConfiguration.providerLabelReference"
+    static let postProcessingBackend = "WalleBrain.ModelConfiguration.postProcessingBackend"
+    static let codexExecutablePath = "WalleBrain.ModelConfiguration.codexExecutablePath"
+    static let codexModel = "WalleBrain.ModelConfiguration.codexModel"
   }
 
   private let defaults: UserDefaults
@@ -89,7 +123,11 @@ public struct ModelConfigurationStore {
       baseURLReference: defaults.string(forKey: Keys.baseURLReference) ?? ModelConfiguration.defaultBaseURLReference,
       apiKeyReference: defaults.string(forKey: Keys.apiKeyReference) ?? ModelConfiguration.defaultAPIKeyReference,
       modelsReference: effectiveModelsReference,
-      providerLabelReference: defaults.string(forKey: Keys.providerLabelReference) ?? ModelConfiguration.defaultProviderLabelReference
+      providerLabelReference: defaults.string(forKey: Keys.providerLabelReference) ?? ModelConfiguration.defaultProviderLabelReference,
+      postProcessingBackend: defaults.string(forKey: Keys.postProcessingBackend)
+        .flatMap(PostProcessingBackend.init(rawValue:)) ?? .default,
+      codexExecutablePath: defaults.string(forKey: Keys.codexExecutablePath) ?? "",
+      codexModel: defaults.string(forKey: Keys.codexModel) ?? ""
     )
   }
 
@@ -98,6 +136,9 @@ public struct ModelConfigurationStore {
     defaults.set(configuration.apiKeyReference, forKey: Keys.apiKeyReference)
     defaults.set(configuration.modelsReference, forKey: Keys.modelsReference)
     defaults.set(configuration.providerLabelReference, forKey: Keys.providerLabelReference)
+    defaults.set(configuration.postProcessingBackend.rawValue, forKey: Keys.postProcessingBackend)
+    defaults.set(configuration.codexExecutablePath, forKey: Keys.codexExecutablePath)
+    defaults.set(configuration.codexModel, forKey: Keys.codexModel)
   }
 }
 

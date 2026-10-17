@@ -57,7 +57,7 @@ public actor MeetingPostProcessor {
       )
     }
 
-    let postProcessingClient = try client ?? LLMChatClient()
+    let postProcessingClient = try client ?? MeetingPostProcessingClientFactory.makeClient()
     let organizedResult: OrganizedTranscriptResult
     if
       reuseExistingOrganizedTranscript,

@@ -6,11 +6,17 @@ struct WalleBrainReprocessSession {
   static func main() async throws {
     let arguments = CommandLine.arguments
     let organizeOnly = arguments.contains("--organize-only")
+    let backendArgument = arguments.first { $0.hasPrefix("--backend=") }?.dropFirst("--backend=".count)
+    let backend = backendArgument.flatMap { PostProcessingBackend(rawValue: String($0)) }
     let positionalArguments = arguments.dropFirst().filter { !$0.hasPrefix("--") }
-    guard let sessionPath = positionalArguments.first else {
-      fputs("Usage: swift run WalleBrainReprocessSession [--organize-only] <session-json-path>\n", stderr)
+    guard let sessionPath = positionalArguments.first, backendArgument == nil || backend != nil else {
+      fputs("Usage: swift run WalleBrainReprocessSession [--organize-only] [--backend=codex|api] <session-json-path>\n", stderr)
       Foundation.exit(2)
     }
+    let client = try MeetingPostProcessingClientFactory.makeClient(
+      backend: backend,
+      log: PostProcessingLog.unifiedLogAndStandardError
+    )
 
     let sessionURL = URL(fileURLWithPath: sessionPath)
     let decoder = JSONDecoder()
@@ -23,15 +29,16 @@ struct WalleBrainReprocessSession {
 
     let paths = RuntimePaths()
     if organizeOnly {
-      session = try await organizeSession(session, paths: paths)
+      session = try await organizeSession(session, paths: paths, client: client)
     } else {
-      session = try await MeetingPostProcessor(paths: paths).process(session)
+      session = try await MeetingPostProcessor(paths: paths, client: client).process(session)
     }
 
     try await MeetingSessionStore(paths: paths).save(session)
 
     let output: [String: String] = [
       "status": session.status.rawValue,
+      "provider": session.provider ?? "",
       "model": session.model ?? "",
       "notePath": session.exportedNotePath ?? "",
       "error": session.errorMessage ?? ""
@@ -43,7 +50,8 @@ struct WalleBrainReprocessSession {
 
   private static func organizeSession(
     _ session: NativeMeetingSession,
-    paths: RuntimePaths
+    paths: RuntimePaths,
+    client: any MeetingPostProcessingClient
   ) async throws -> NativeMeetingSession {
     var session = session
     let sourceTranscript = session.correctedTranscript?
@@ -65,7 +73,7 @@ struct WalleBrainReprocessSession {
       dictionary = try await TermDictionaryStore(paths: paths).loadDictionary()
     }
 
-    let result = try await LLMChatClient().organizeTranscript(
+    let result = try await client.organizeTranscript(
       transcript: effectiveTranscript,
       dictionary: dictionary
     )
