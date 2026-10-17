@@ -31,27 +31,33 @@ public actor TermDictionaryStore {
     try Self.parse(markdown: loadRawMarkdown())
   }
 
+  /// Parses the Business Dictionary markdown. Every `##` (or deeper) heading starts its own entry; a
+  /// deeper heading such as `### 张俊峰` under `## 神策` records the enclosing heading in its notes.
+  /// Keys accept `:` or `：`, and aliases split on `,`, `，` or `、`.
   public static func parse(markdown: String) throws -> TermDictionary {
     let lines = markdown.components(separatedBy: .newlines)
     var title = "Business Dictionary"
     var entries: [TermEntry] = []
 
     var canonical: String?
+    var parent: String?
     var aliases: [String] = []
     var type: String?
     var notes: String?
+    var headingStack: [(level: Int, text: String)] = []
 
     func flushCurrentEntry() {
       guard let canonical, !canonical.isEmpty else {
         return
       }
 
+      let parentNote = parent.map { "parent: \($0)" }
       entries.append(
         TermEntry(
           canonical: canonical,
           aliases: aliases.filter { !$0.isEmpty },
           type: type?.nilIfEmpty,
-          notes: notes?.nilIfEmpty
+          notes: [notes?.nilIfEmpty, parentNote].compactMap { $0 }.joined(separator: "; ").nilIfEmpty
         )
       )
     }
@@ -64,9 +70,12 @@ public actor TermDictionaryStore {
         continue
       }
 
-      if line.hasPrefix("## ") {
+      if let heading = entryHeading(line) {
         flushCurrentEntry()
-        canonical = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        headingStack.removeAll { $0.level >= heading.level }
+        canonical = heading.text
+        parent = headingStack.last?.text.nilIfEmpty
+        headingStack.append(heading)
         aliases = []
         type = nil
         notes = nil
@@ -80,20 +89,18 @@ public actor TermDictionaryStore {
         continue
       }
 
-      let payload = String(line.dropFirst(2))
-      let parts = payload.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-      guard parts.count == 2 else {
+      let payload = line.dropFirst(2)
+      guard let separator = payload.firstIndex(where: { $0 == ":" || $0 == "：" }) else {
         continue
       }
 
-      let key = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-      let value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+      let key = payload[..<separator].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      let value = payload[payload.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
 
       switch key {
       case "aliases":
         aliases = value
-          .replacingOccurrences(of: "，", with: ",")
-          .split(separator: ",")
+          .split(whereSeparator: { $0 == "," || $0 == "，" || $0 == "、" })
           .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       case "type":
         type = value
@@ -111,6 +118,15 @@ public actor TermDictionaryStore {
     }
 
     return TermDictionary(title: title, entries: entries)
+  }
+
+  /// `## term`, `### term`, ... — any heading of level two or deeper.
+  private static func entryHeading(_ line: String) -> (level: Int, text: String)? {
+    let level = line.prefix { $0 == "#" }.count
+    guard level >= 2, line.dropFirst(level).first == " " else {
+      return nil
+    }
+    return (level, line.dropFirst(level).trimmingCharacters(in: .whitespaces))
   }
 
   public static let sampleMarkdown = """
