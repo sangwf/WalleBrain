@@ -5,6 +5,37 @@ import Foundation
 import WalleBrainCore
 
 @MainActor
+final class AudioMeterModel: ObservableObject {
+  @Published var rmsLevel: Double = 0
+  @Published var peakLevel: Double = 0
+  @Published var isReceivingAudio = false
+
+  func update(_ snapshot: AudioLevelSnapshot) {
+    rmsLevel = snapshot.rmsLevel
+    peakLevel = snapshot.peakLevel
+    isReceivingAudio = snapshot.isReceivingAudio
+  }
+
+  func reset() {
+    rmsLevel = 0
+    peakLevel = 0
+    isReceivingAudio = false
+  }
+
+  var statusText: String {
+    if peakLevel < 0.018 && rmsLevel < 0.007 {
+      return "Weak"
+    }
+
+    return isReceivingAudio ? "Audio" : "Quiet"
+  }
+
+  var normalizedLevel: Double {
+    min(1, max(peakLevel * 10, rmsLevel * 18))
+  }
+}
+
+@MainActor
 final class AppModel: ObservableObject {
   enum SidebarItem: String, CaseIterable, Identifiable {
     case meeting = "Meetings"
@@ -37,9 +68,7 @@ final class AppModel: ObservableObject {
   @Published var isTestingModelConfiguration = false
   @Published var realtimeTranscriptionStatusMessage = ""
   @Published var isTestingRealtimeTranscriptionConfiguration = false
-  @Published var audioLevel: Double = 0
-  @Published var audioPeakLevel: Double = 0
-  @Published var isReceivingAudio = false
+  let audioMeter = AudioMeterModel()
   @Published var transcriptionQualityMode: TranscriptionQualityMode = .local {
     didSet {
       UserDefaults.standard.set(transcriptionQualityMode.rawValue, forKey: Self.transcriptionQualityModeDefaultsKey)
@@ -106,9 +135,7 @@ final class AppModel: ObservableObject {
       },
       onAudioLevel: { [weak self] snapshot in
         await MainActor.run {
-          self?.audioLevel = snapshot.rmsLevel
-          self?.audioPeakLevel = snapshot.peakLevel
-          self?.isReceivingAudio = snapshot.isReceivingAudio
+          self?.audioMeter.update(snapshot)
         }
       }
     )
@@ -769,9 +796,7 @@ final class AppModel: ObservableObject {
   }
 
   private func resetAudioLevel() {
-    audioLevel = 0
-    audioPeakLevel = 0
-    isReceivingAudio = false
+    audioMeter.reset()
   }
 
   private func normalizedMeetingTitle(from rawTitle: String) -> String {
@@ -972,22 +997,6 @@ final class AppModel: ObservableObject {
       return "Ready via \(preview.model)."
     }
     return preview.apiKey.errorMessage ?? "OPENAI_API_KEY is unavailable."
-  }
-
-  var audioInputStatusText: String {
-    guard currentSession?.status == .recording else {
-      return "Idle"
-    }
-
-    if audioPeakLevel < 0.018 && audioLevel < 0.007 {
-      return "Weak"
-    }
-
-    return isReceivingAudio ? "Audio" : "Quiet"
-  }
-
-  var normalizedAudioMeterLevel: Double {
-    min(1, max(audioPeakLevel * 10, audioLevel * 18))
   }
 
   func maskedResolvedValue(for value: ResolvedConfigurationValue) -> String {

@@ -283,6 +283,45 @@ private struct SettingsSection: View {
   }
 }
 
+private struct AudioMeterView: View {
+  @ObservedObject var model: AudioMeterModel
+  let isRecording: Bool
+
+  var body: some View {
+    HStack(alignment: .lastTextBaseline, spacing: 6) {
+      HStack(alignment: .bottom, spacing: 4) {
+        ForEach(0 ..< 5, id: \.self) { index in
+          Capsule()
+            .fill(barIsActive(index) ? Color.accentColor : Color.secondary.opacity(0.18))
+            .frame(width: 5, height: CGFloat(8 + index * 4))
+        }
+      }
+      .frame(width: 44, height: 24, alignment: .bottom)
+      .alignmentGuide(.lastTextBaseline) { dimension in
+        dimension[VerticalAlignment.bottom]
+      }
+
+      Text(statusText)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(isRecording && model.isReceivingAudio ? Color.accentColor : Color.secondary)
+        .lineLimit(1)
+        .frame(width: 42, alignment: .leading)
+    }
+    .help("Input audio level")
+  }
+
+  private var statusText: String {
+    isRecording ? model.statusText : "Idle"
+  }
+
+  private func barIsActive(_ index: Int) -> Bool {
+    guard isRecording else {
+      return false
+    }
+    return model.normalizedLevel >= Double(index + 1) / 5
+  }
+}
+
 private struct MeetingWorkspaceView: View {
   @ObservedObject var model: AppModel
   @AppStorage("meetingInspectorVisible") private var isInspectorVisible = false
@@ -381,6 +420,8 @@ private struct MeetingWorkspaceView: View {
         TextField("Meeting title", text: $model.meetingTitle)
           .textFieldStyle(.plain)
           .font(.system(size: 34, weight: .bold, design: .rounded))
+          .lineLimit(1)
+          .frame(minHeight: 48, alignment: .leading)
           .focused($isTitleFieldFocused)
           .onSubmit {
             Task {
@@ -397,6 +438,7 @@ private struct MeetingWorkspaceView: View {
         } label: {
           Image(systemName: isInspectorVisible ? "sidebar.right" : "sidebar.trailing")
             .font(.title3.weight(.semibold))
+            .frame(width: 32, height: 32)
         }
         .buttonStyle(.plain)
         .help(isInspectorVisible ? "Hide properties" : "Show properties")
@@ -491,7 +533,7 @@ private struct MeetingWorkspaceView: View {
         .disabled(!model.canEditMeetingSetup)
         .help("Refresh audio inputs")
 
-        audioMeterView
+        AudioMeterView(model: model.audioMeter, isRecording: model.currentSession?.status == .recording)
       }
     }
   }
@@ -552,36 +594,6 @@ private struct MeetingWorkspaceView: View {
       .foregroundStyle(.secondary)
       .textCase(.uppercase)
       .frame(width: 112, alignment: .leading)
-  }
-
-  private var audioMeterView: some View {
-    HStack(alignment: .lastTextBaseline, spacing: 6) {
-      HStack(alignment: .bottom, spacing: 4) {
-        ForEach(0 ..< 5, id: \.self) { index in
-          Capsule()
-            .fill(audioMeterBarIsActive(index) ? Color.accentColor : Color.secondary.opacity(0.18))
-            .frame(width: 5, height: CGFloat(8 + index * 4))
-        }
-      }
-      .frame(width: 44, height: 24, alignment: .bottom)
-      .alignmentGuide(.lastTextBaseline) { dimension in
-        dimension[VerticalAlignment.bottom]
-      }
-
-      Text(model.audioInputStatusText)
-        .font(.caption.weight(.medium))
-        .foregroundStyle(model.isReceivingAudio ? Color.accentColor : Color.secondary)
-        .lineLimit(1)
-        .frame(width: 42, alignment: .leading)
-    }
-    .help("Input audio level")
-  }
-
-  private func audioMeterBarIsActive(_ index: Int) -> Bool {
-    guard model.currentSession?.status == .recording else {
-      return false
-    }
-    return model.normalizedAudioMeterLevel >= Double(index + 1) / 5
   }
 
   private var transcriptSection: some View {
