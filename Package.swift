@@ -31,6 +31,10 @@ let package = Package(
       name: "WalleBrainReprocessSession",
       targets: ["WalleBrainReprocessSession"]
     ),
+    .executable(
+      name: "WalleBrainTranscriptionBenchmark",
+      targets: ["WalleBrainTranscriptionBenchmark"]
+    ),
   ],
   targets: [
     .target(
@@ -54,6 +58,10 @@ let package = Package(
     ),
     .executableTarget(
       name: "WalleBrainReprocessSession",
+      dependencies: ["WalleBrainCore"]
+    ),
+    .executableTarget(
+      name: "WalleBrainTranscriptionBenchmark",
       dependencies: ["WalleBrainCore"]
     ),
     .testTarget(

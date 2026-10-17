@@ -15,6 +15,7 @@
     "native:open": "./scripts/build_native_bundle.sh WalleBrainApp WalleBrain com.wallebrain.app >/tmp/wallebrain_bundle_path && open \"$(cat /tmp/wallebrain_bundle_path)\"",
     "native:acceptance": "swift run WalleBrainAcceptance",
     "prepare-magicdata-subset": "tsx src/bin/prepare-magicdata-subset.ts",
+    "prepare-aishell4-subset": "tsx src/bin/prepare-aishell4-subset.ts",
     "hotkey-agent": "./scripts/run_hotkey_agent.sh",
     "sync-demo-session": "tsx src/bin/sync-demo-session.ts",
     "dev": "vite",
