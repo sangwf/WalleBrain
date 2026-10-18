@@ -64,6 +64,11 @@ final class AppModel: ObservableObject {
   @Published var modelAPIKeyReference = ModelConfiguration.defaultAPIKeyReference
   @Published var modelsReference = ModelConfiguration.defaultModelsReference
   @Published var modelProviderLabelReference = ModelConfiguration.defaultProviderLabelReference
+  @Published var postProcessingBackend: PostProcessingBackend = .default
+  @Published var codexExecutablePath = ""
+  @Published var codexModel = ""
+  @Published var codexStatusMessage = ""
+  @Published var isCheckingCodex = false
   @Published var modelConfigurationStatusMessage = ""
   @Published var isTestingModelConfiguration = false
   @Published var realtimeTranscriptionStatusMessage = ""
@@ -234,6 +239,9 @@ final class AppModel: ObservableObject {
     modelAPIKeyReference = configuration.apiKeyReference
     modelsReference = configuration.modelsReference
     modelProviderLabelReference = configuration.providerLabelReference
+    postProcessingBackend = configuration.postProcessingBackend
+    codexExecutablePath = configuration.codexExecutablePath
+    codexModel = configuration.codexModel
     if modelConfigurationStatusMessage.isEmpty {
       modelConfigurationStatusMessage = "Ready"
     }
@@ -257,6 +265,25 @@ final class AppModel: ObservableObject {
       modelConfigurationStatusMessage = "Connected via \(result.model)"
     } catch {
       modelConfigurationStatusMessage = error.localizedDescription
+    }
+  }
+
+  /// Resolves and version-checks the Codex binary without sending a prompt.
+  func checkCodexInstallation() async {
+    guard !isCheckingCodex else {
+      return
+    }
+
+    isCheckingCodex = true
+    defer { isCheckingCodex = false }
+
+    do {
+      let executable = try await CodexCLIPostProcessingClient(
+        options: CodexCLIOptions(executablePath: codexExecutablePath, model: codexModel)
+      ).resolveExecutable()
+      codexStatusMessage = "\(executable.version) at \(executable.path)"
+    } catch {
+      codexStatusMessage = error.localizedDescription
     }
   }
 
@@ -828,7 +855,10 @@ final class AppModel: ObservableObject {
       baseURLReference: modelBaseURLReference,
       apiKeyReference: modelAPIKeyReference,
       modelsReference: modelsReference,
-      providerLabelReference: modelProviderLabelReference
+      providerLabelReference: modelProviderLabelReference,
+      postProcessingBackend: postProcessingBackend,
+      codexExecutablePath: codexExecutablePath,
+      codexModel: codexModel
     )
   }
 

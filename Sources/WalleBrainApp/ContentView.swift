@@ -1241,140 +1241,144 @@ private struct SettingsSheetView: View {
   @State private var revealsAPIKey = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 18) {
-      HStack {
-        VStack(alignment: .leading, spacing: 4) {
-          Text("Settings")
-            .font(.largeTitle.weight(.bold))
-          Text("Model Configuration")
-            .foregroundStyle(.secondary)
-        }
-        Spacer()
-        Button("Done") {
-          dismiss()
-        }
-        .buttonStyle(.borderedProminent)
-      }
-
-      Text("Use `$ENV_VAR` to resolve from the current environment. Literal values are used as-is.")
-        .font(.subheadline)
-        .foregroundStyle(.secondary)
-
-      GroupBox {
-        VStack(alignment: .leading, spacing: 14) {
-          configurationField(
-            title: "Base URL",
-            text: $model.modelBaseURLReference,
-            preview: model.modelConfigurationPreview.baseURL,
-            masksResolvedValue: false
-          )
-
-          configurationField(
-            title: "API Key",
-            text: $model.modelAPIKeyReference,
-            preview: model.modelConfigurationPreview.apiKey,
-            masksResolvedValue: true
-          )
-
-          modelsField
-
-          configurationField(
-            title: "Provider Label",
-            text: $model.modelProviderLabelReference,
-            preview: model.modelConfigurationPreview.providerLabel,
-            masksResolvedValue: false
-          )
-        }
-        .padding(8)
-      } label: {
-        Text("LLM")
-          .font(.headline)
-      }
-
-      GroupBox {
-        VStack(alignment: .leading, spacing: 14) {
-          HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
-              Text("Provider")
-                .font(.headline)
-              Text(model.realtimeTranscriptionConfigurationPreview.provider)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            VStack(alignment: .leading, spacing: 4) {
-              Text("Model")
-                .font(.headline)
-              Text(model.realtimeTranscriptionConfigurationPreview.model)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-            }
-            .frame(width: 240, alignment: .leading)
+    ScrollView {
+      VStack(alignment: .leading, spacing: 18) {
+        HStack {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Settings")
+              .font(.largeTitle.weight(.bold))
+            Text("Model Configuration")
+              .foregroundStyle(.secondary)
           }
-
-          configurationField(
-            title: "Realtime API Key",
-            text: .constant("$OPENAI_API_KEY"),
-            preview: model.realtimeTranscriptionConfigurationPreview.apiKey,
-            masksResolvedValue: true
-          )
-
-          HStack(spacing: 12) {
-            Button("Test Realtime") {
-              Task {
-                await model.testRealtimeTranscriptionConfiguration()
-              }
-            }
-            .buttonStyle(.bordered)
-            .disabled(model.isTestingRealtimeTranscriptionConfiguration || !model.realtimeTranscriptionConfigurationPreview.isValid)
-
-            if model.isTestingRealtimeTranscriptionConfiguration {
-              ProgressView()
-                .controlSize(.small)
-            }
-
-            Text(model.realtimeTranscriptionStatusMessage.isEmpty ? "High Quality sends live meeting audio to OpenAI. Local keeps live transcription on Apple Speech." : model.realtimeTranscriptionStatusMessage)
-              .font(.caption)
-              .foregroundStyle(model.realtimeTranscriptionConfigurationPreview.isValid ? Color.secondary : Color.red)
+          Spacer()
+          Button("Done") {
+            dismiss()
           }
-        }
-        .padding(8)
-      } label: {
-        Text("Realtime Transcription")
-          .font(.headline)
-      }
-
-      HStack(spacing: 12) {
-        Button("Test Connection") {
-          Task {
-            await model.testModelConfiguration()
-          }
-        }
-        .buttonStyle(.bordered)
-        .disabled(model.isTestingModelConfiguration || !model.modelConfigurationPreview.isValid)
-
-        Button("Save") {
-          model.saveModelConfiguration()
-        }
-        .buttonStyle(.borderedProminent)
-
-        if model.isTestingModelConfiguration {
-          ProgressView()
-            .controlSize(.small)
+          .buttonStyle(.borderedProminent)
         }
 
-        Spacer()
-
-        Text(model.modelConfigurationStatusMessage)
+        Text("Use `$ENV_VAR` to resolve from the current environment. Literal values are used as-is.")
           .font(.subheadline)
-          .foregroundStyle(model.modelConfigurationPreview.isValid ? Color.secondary : Color.red)
-      }
+          .foregroundStyle(.secondary)
 
-      Spacer()
+        postProcessingBackendGroup
+
+        GroupBox {
+          VStack(alignment: .leading, spacing: 14) {
+            configurationField(
+              title: "Base URL",
+              text: $model.modelBaseURLReference,
+              preview: model.modelConfigurationPreview.baseURL,
+              masksResolvedValue: false
+            )
+
+            configurationField(
+              title: "API Key",
+              text: $model.modelAPIKeyReference,
+              preview: model.modelConfigurationPreview.apiKey,
+              masksResolvedValue: true
+            )
+
+            modelsField
+
+            configurationField(
+              title: "Provider Label",
+              text: $model.modelProviderLabelReference,
+              preview: model.modelConfigurationPreview.providerLabel,
+              masksResolvedValue: false
+            )
+          }
+          .padding(8)
+        } label: {
+          Text(model.postProcessingBackend == .codex ? "LLM API (fallback)" : "LLM API")
+            .font(.headline)
+        }
+
+        GroupBox {
+          VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+              VStack(alignment: .leading, spacing: 4) {
+                Text("Provider")
+                  .font(.headline)
+                Text(model.realtimeTranscriptionConfigurationPreview.provider)
+                  .font(.caption.monospaced())
+                  .foregroundStyle(.secondary)
+              }
+
+              Spacer()
+
+              VStack(alignment: .leading, spacing: 4) {
+                Text("Model")
+                  .font(.headline)
+                Text(model.realtimeTranscriptionConfigurationPreview.model)
+                  .font(.caption.monospaced())
+                  .foregroundStyle(.secondary)
+              }
+              .frame(width: 240, alignment: .leading)
+            }
+
+            configurationField(
+              title: "Realtime API Key",
+              text: .constant("$OPENAI_API_KEY"),
+              preview: model.realtimeTranscriptionConfigurationPreview.apiKey,
+              masksResolvedValue: true
+            )
+
+            HStack(spacing: 12) {
+              Button("Test Realtime") {
+                Task {
+                  await model.testRealtimeTranscriptionConfiguration()
+                }
+              }
+              .buttonStyle(.bordered)
+              .disabled(model.isTestingRealtimeTranscriptionConfiguration || !model.realtimeTranscriptionConfigurationPreview.isValid)
+
+              if model.isTestingRealtimeTranscriptionConfiguration {
+                ProgressView()
+                  .controlSize(.small)
+              }
+
+              Text(model.realtimeTranscriptionStatusMessage.isEmpty ? "High Quality sends live meeting audio to OpenAI. Local keeps live transcription on Apple Speech." : model.realtimeTranscriptionStatusMessage)
+                .font(.caption)
+                .foregroundStyle(model.realtimeTranscriptionConfigurationPreview.isValid ? Color.secondary : Color.red)
+            }
+          }
+          .padding(8)
+        } label: {
+          Text("Realtime Transcription")
+            .font(.headline)
+        }
+
+        HStack(spacing: 12) {
+          Button("Test Connection") {
+            Task {
+              await model.testModelConfiguration()
+            }
+          }
+          .buttonStyle(.bordered)
+          .disabled(model.isTestingModelConfiguration || !model.modelConfigurationPreview.isValid)
+
+          Button("Save") {
+            model.saveModelConfiguration()
+          }
+          .buttonStyle(.borderedProminent)
+
+          if model.isTestingModelConfiguration {
+            ProgressView()
+              .controlSize(.small)
+          }
+
+          Spacer()
+
+          Text(model.modelConfigurationStatusMessage)
+            .font(.subheadline)
+            .foregroundStyle(model.modelConfigurationPreview.isValid ? Color.secondary : Color.red)
+        }
+
+      }
+      .padding(24)
+      .frame(maxWidth: .infinity, alignment: .topLeading)
     }
-    .padding(24)
     .frame(minWidth: 680, minHeight: 650, alignment: .topLeading)
   }
 
@@ -1434,6 +1438,67 @@ private struct SettingsSheetView: View {
             .foregroundStyle(.red)
         }
       }
+    }
+  }
+
+  private var postProcessingBackendGroup: some View {
+    GroupBox {
+      VStack(alignment: .leading, spacing: 14) {
+        Picker("Backend", selection: $model.postProcessingBackend) {
+          ForEach(PostProcessingBackend.allCases) { backend in
+            Text(backend.displayName).tag(backend)
+          }
+        }
+        .pickerStyle(.segmented)
+
+        Text(
+          model.postProcessingBackend == .codex
+            ? "Organizes and summarizes meetings with the local Codex CLI (`codex exec`, read-only sandbox) and falls back to the LLM API below if Codex is missing or fails."
+            : "Organizes and summarizes meetings with the LLM API below only."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+
+        if model.postProcessingBackend == .codex {
+          VStack(alignment: .leading, spacing: 8) {
+            Text("Codex Binary")
+              .font(.headline)
+            TextField("Auto-detect (PATH, /opt/homebrew/bin, /usr/local/bin, ~/.local/bin)", text: $model.codexExecutablePath)
+              .textFieldStyle(.roundedBorder)
+          }
+
+          VStack(alignment: .leading, spacing: 8) {
+            Text("Codex Model")
+              .font(.headline)
+            TextField("Codex default (from ~/.codex/config.toml)", text: $model.codexModel)
+              .textFieldStyle(.roundedBorder)
+          }
+
+          HStack(spacing: 12) {
+            Button("Check Codex") {
+              Task {
+                await model.checkCodexInstallation()
+              }
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.isCheckingCodex)
+
+            if model.isCheckingCodex {
+              ProgressView()
+                .controlSize(.small)
+            }
+
+            Text(model.codexStatusMessage)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .textSelection(.enabled)
+          }
+        }
+      }
+      .padding(8)
+    } label: {
+      Text("After-Meeting Processing")
+        .font(.headline)
     }
   }
 

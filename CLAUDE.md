@@ -32,6 +32,7 @@ swift build                      # Build all Swift targets
 swift test                       # Run WalleBrainCoreTests
 swift run WalleBrainApp          # Run the native app from CLI
 swift run WalleBrainAcceptance   # Run native acceptance tests
+swift run WalleBrainReprocessSession [--organize-only] [--backend=codex|api] <session.json>  # Re-run post-processing; rewrites the session JSON/MD in place at its recorded paths
 npm run native:bundle            # Code-sign and bundle WalleBrainApp as .app
 npm run native:open              # Bundle and open WalleBrainApp
 ```
@@ -69,6 +70,7 @@ Session Create → Recording → Live Transcription → Stop → Post-Processing
   - `MicrophoneCaptureService.swift` / `SystemAudioCaptureService.swift` / `MixedCaptureService.swift` — Three audio capture modes (mic-only, system audio, mixed).
   - `TranscriptAssembler.swift` — Merges overlapping speech recognition chunks into clean transcript.
   - `LLMChatClient.swift` — OpenAI-compatible LLM summarization using the configured `Models` list from settings, tried from left to right.
+  - `CodexCLIPostProcessingClient.swift` / `FallbackPostProcessingClient.swift` — Default after-meeting backend: runs the shared prompts (`MeetingPostProcessingPrompts.swift`) through the local Codex CLI (`codex exec`, read-only sandbox, `--ephemeral`, temp workspace holding only the transcript), then falls back to `LLMChatClient` if Codex is missing, fails, times out, or returns unusable output. `CodexExecutableResolver` searches the configured path, `PATH`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, and prefers the native binary behind an npm `codex.js` wrapper. Settings → After-Meeting Processing picks "Codex (default)" or "API".
   - `TermDictionaryStore.swift` / `SpeechVocabulary.swift` / `PhoneticTermRepair.swift` — Business Dictionary → live speech vocabulary. `SpeechTranscriber` has no custom-LM hook (contextual strings are applied but currently ignored), so dictionary terms are fixed live by a conservative pinyin near-homophone repair (e.g. `神车` → `神策`).
   - `CustomLanguageModelCompiler.swift` — Compiles a cached `SFSpeechLanguageModel` (only usable by `DictationTranscriber`; not used in the live path because it raises general CER).
   - `NoteExporter.swift` — Generates Obsidian markdown with frontmatter.
