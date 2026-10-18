@@ -283,6 +283,45 @@ private struct SettingsSection: View {
   }
 }
 
+private struct AudioMeterView: View {
+  @ObservedObject var model: AudioMeterModel
+  let isRecording: Bool
+
+  var body: some View {
+    HStack(alignment: .lastTextBaseline, spacing: 6) {
+      HStack(alignment: .bottom, spacing: 4) {
+        ForEach(0 ..< 5, id: \.self) { index in
+          Capsule()
+            .fill(barIsActive(index) ? Color.accentColor : Color.secondary.opacity(0.18))
+            .frame(width: 5, height: CGFloat(8 + index * 4))
+        }
+      }
+      .frame(width: 44, height: 24, alignment: .bottom)
+      .alignmentGuide(.lastTextBaseline) { dimension in
+        dimension[VerticalAlignment.bottom]
+      }
+
+      Text(statusText)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(isRecording && model.isReceivingAudio ? Color.accentColor : Color.secondary)
+        .lineLimit(1)
+        .frame(width: 42, alignment: .leading)
+    }
+    .help("Input audio level")
+  }
+
+  private var statusText: String {
+    isRecording ? model.statusText : "Idle"
+  }
+
+  private func barIsActive(_ index: Int) -> Bool {
+    guard isRecording else {
+      return false
+    }
+    return model.normalizedLevel >= Double(index + 1) / 5
+  }
+}
+
 private struct MeetingWorkspaceView: View {
   @ObservedObject var model: AppModel
   @AppStorage("meetingInspectorVisible") private var isInspectorVisible = false
@@ -381,6 +420,8 @@ private struct MeetingWorkspaceView: View {
         TextField("Meeting title", text: $model.meetingTitle)
           .textFieldStyle(.plain)
           .font(.system(size: 34, weight: .bold, design: .rounded))
+          .lineLimit(1)
+          .frame(minHeight: 48, alignment: .leading)
           .focused($isTitleFieldFocused)
           .onSubmit {
             Task {
@@ -397,6 +438,7 @@ private struct MeetingWorkspaceView: View {
         } label: {
           Image(systemName: isInspectorVisible ? "sidebar.right" : "sidebar.trailing")
             .font(.title3.weight(.semibold))
+            .frame(width: 32, height: 32)
         }
         .buttonStyle(.plain)
         .help(isInspectorVisible ? "Hide properties" : "Show properties")
@@ -491,7 +533,7 @@ private struct MeetingWorkspaceView: View {
         .disabled(!model.canEditMeetingSetup)
         .help("Refresh audio inputs")
 
-        audioMeterView
+        AudioMeterView(model: model.audioMeter, isRecording: model.currentSession?.status == .recording)
       }
     }
   }
@@ -552,36 +594,6 @@ private struct MeetingWorkspaceView: View {
       .foregroundStyle(.secondary)
       .textCase(.uppercase)
       .frame(width: 112, alignment: .leading)
-  }
-
-  private var audioMeterView: some View {
-    HStack(alignment: .lastTextBaseline, spacing: 6) {
-      HStack(alignment: .bottom, spacing: 4) {
-        ForEach(0 ..< 5, id: \.self) { index in
-          Capsule()
-            .fill(audioMeterBarIsActive(index) ? Color.accentColor : Color.secondary.opacity(0.18))
-            .frame(width: 5, height: CGFloat(8 + index * 4))
-        }
-      }
-      .frame(width: 44, height: 24, alignment: .bottom)
-      .alignmentGuide(.lastTextBaseline) { dimension in
-        dimension[VerticalAlignment.bottom]
-      }
-
-      Text(model.audioInputStatusText)
-        .font(.caption.weight(.medium))
-        .foregroundStyle(model.isReceivingAudio ? Color.accentColor : Color.secondary)
-        .lineLimit(1)
-        .frame(width: 42, alignment: .leading)
-    }
-    .help("Input audio level")
-  }
-
-  private func audioMeterBarIsActive(_ index: Int) -> Bool {
-    guard model.currentSession?.status == .recording else {
-      return false
-    }
-    return model.normalizedAudioMeterLevel >= Double(index + 1) / 5
   }
 
   private var transcriptSection: some View {
@@ -747,7 +759,7 @@ private struct MeetingWorkspaceView: View {
               await model.reprocessCurrentSession()
             }
           } label: {
-            Label(model.currentSession?.status == .failed ? "Retry AI" : "Regenerate AI", systemImage: "arrow.triangle.2.circlepath")
+            Label(reprocessButtonTitle, systemImage: "arrow.triangle.2.circlepath")
           }
           .buttonStyle(.bordered)
           .controlSize(.small)
@@ -808,6 +820,17 @@ private struct MeetingWorkspaceView: View {
           showsSummaryReviewSheet = true
         }
       )
+    }
+  }
+
+  private var reprocessButtonTitle: String {
+    switch model.currentSession?.status {
+    case .failed:
+      return "Retry AI"
+    case .organized:
+      return "Retry Summary"
+    default:
+      return "Regenerate AI"
     }
   }
 
@@ -1079,6 +1102,9 @@ private struct SessionInspector: View {
 
         inspectorCard("Artifacts") {
           inspectorLine("Audio", model.currentSession?.audioFilePath ?? "Pending")
+          if let systemAudioFilePath = model.currentSession?.systemAudioFilePath {
+            inspectorLine("System Audio", systemAudioFilePath)
+          }
           inspectorLine("Note", model.currentSession?.exportedNotePath ?? "Pending")
           inspectorLine("Dictionary", model.currentSession?.dictionaryPath ?? "Pending")
         }
@@ -1218,141 +1244,195 @@ private struct SettingsSheetView: View {
   @State private var revealsAPIKey = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 18) {
-      HStack {
-        VStack(alignment: .leading, spacing: 4) {
-          Text("Settings")
-            .font(.largeTitle.weight(.bold))
-          Text("Model Configuration")
+    ScrollView {
+      VStack(alignment: .leading, spacing: 18) {
+        HStack {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Settings")
+              .font(.largeTitle.weight(.bold))
+            Text("Model Configuration")
+              .foregroundStyle(.secondary)
+          }
+          Spacer()
+          Button("Done") {
+            dismiss()
+          }
+          .buttonStyle(.borderedProminent)
+        }
+
+        Text("Use `$ENV_VAR` to resolve from the current environment. Literal values are used as-is.")
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+
+        dataDirectoryGroup
+
+        PostProcessingSettingsView(model: model)
+
+        GroupBox {
+          VStack(alignment: .leading, spacing: 14) {
+            configurationField(
+              title: "Base URL",
+              text: $model.modelBaseURLReference,
+              preview: model.modelConfigurationPreview.baseURL,
+              masksResolvedValue: false
+            )
+
+            configurationField(
+              title: "API Key",
+              text: $model.modelAPIKeyReference,
+              preview: model.modelConfigurationPreview.apiKey,
+              masksResolvedValue: true
+            )
+
+            modelsField
+
+            configurationField(
+              title: "Provider Label",
+              text: $model.modelProviderLabelReference,
+              preview: model.modelConfigurationPreview.providerLabel,
+              masksResolvedValue: false
+            )
+          }
+          .padding(8)
+        } label: {
+          Text("LLM API")
+            .font(.headline)
+        }
+
+        GroupBox {
+          VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+              VStack(alignment: .leading, spacing: 4) {
+                Text("Provider")
+                  .font(.headline)
+                Text(model.realtimeTranscriptionConfigurationPreview.provider)
+                  .font(.caption.monospaced())
+                  .foregroundStyle(.secondary)
+              }
+
+              Spacer()
+
+              VStack(alignment: .leading, spacing: 4) {
+                Text("Model")
+                  .font(.headline)
+                Text(model.realtimeTranscriptionConfigurationPreview.model)
+                  .font(.caption.monospaced())
+                  .foregroundStyle(.secondary)
+              }
+              .frame(width: 240, alignment: .leading)
+            }
+
+            configurationField(
+              title: "Realtime API Key",
+              text: .constant("$OPENAI_API_KEY"),
+              preview: model.realtimeTranscriptionConfigurationPreview.apiKey,
+              masksResolvedValue: true
+            )
+
+            HStack(spacing: 12) {
+              Button("Test Realtime") {
+                Task {
+                  await model.testRealtimeTranscriptionConfiguration()
+                }
+              }
+              .buttonStyle(.bordered)
+              .disabled(model.isTestingRealtimeTranscriptionConfiguration || !model.realtimeTranscriptionConfigurationPreview.isValid)
+
+              if model.isTestingRealtimeTranscriptionConfiguration {
+                ProgressView()
+                  .controlSize(.small)
+              }
+
+              Text(model.realtimeTranscriptionStatusMessage.isEmpty ? "High Quality sends live meeting audio to OpenAI. Local keeps live transcription on Apple Speech." : model.realtimeTranscriptionStatusMessage)
+                .font(.caption)
+                .foregroundStyle(model.realtimeTranscriptionConfigurationPreview.isValid ? Color.secondary : Color.red)
+            }
+          }
+          .padding(8)
+        } label: {
+          Text("Realtime Transcription")
+            .font(.headline)
+        }
+
+        HStack(spacing: 12) {
+          Button("Test Connection") {
+            Task {
+              await model.testModelConfiguration()
+            }
+          }
+          .buttonStyle(.bordered)
+          .disabled(model.isTestingModelConfiguration || !model.modelConfigurationPreview.isValid)
+
+          Button("Save") {
+            model.saveModelConfiguration()
+          }
+          .buttonStyle(.borderedProminent)
+
+          if model.isTestingModelConfiguration {
+            ProgressView()
+              .controlSize(.small)
+          }
+
+          Spacer()
+
+          Text(model.modelConfigurationStatusMessage)
+            .font(.subheadline)
+            .foregroundStyle(model.modelConfigurationPreview.isValid ? Color.secondary : Color.red)
+        }
+
+      }
+      .padding(24)
+      .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+    .frame(minWidth: 680, minHeight: 650, alignment: .topLeading)
+  }
+
+  private var dataDirectoryGroup: some View {
+    GroupBox {
+      VStack(alignment: .leading, spacing: 10) {
+        Text(model.dataDirectoryPath)
+          .font(.callout.monospaced())
+          .textSelection(.enabled)
+
+        Text(model.dataDirectorySourceDescription)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+
+        Text("Meetings: \(model.meetingSessionsDirectoryPath)")
+          .font(.caption.monospaced())
+          .foregroundStyle(.secondary)
+          .textSelection(.enabled)
+
+        HStack(spacing: 12) {
+          Button("Choose…") {
+            model.chooseDataDirectory()
+          }
+          .buttonStyle(.bordered)
+          .disabled(!model.dataDirectory.source.honorsSettings)
+
+          Button("Show in Finder") {
+            model.revealDataDirectory()
+          }
+          .buttonStyle(.bordered)
+        }
+
+        if let pending = model.pendingDataDirectoryPath {
+          Text("Next launch: \(pending)")
+            .font(.caption.monospaced())
+        }
+
+        if !model.dataDirectoryStatusMessage.isEmpty {
+          Text(model.dataDirectoryStatusMessage)
+            .font(.caption)
             .foregroundStyle(.secondary)
         }
-        Spacer()
-        Button("Done") {
-          dismiss()
-        }
-        .buttonStyle(.borderedProminent)
       }
-
-      Text("Use `$ENV_VAR` to resolve from the current environment. Literal values are used as-is.")
-        .font(.subheadline)
-        .foregroundStyle(.secondary)
-
-      GroupBox {
-        VStack(alignment: .leading, spacing: 14) {
-          configurationField(
-            title: "Base URL",
-            text: $model.modelBaseURLReference,
-            preview: model.modelConfigurationPreview.baseURL,
-            masksResolvedValue: false
-          )
-
-          configurationField(
-            title: "API Key",
-            text: $model.modelAPIKeyReference,
-            preview: model.modelConfigurationPreview.apiKey,
-            masksResolvedValue: true
-          )
-
-          modelsField
-
-          configurationField(
-            title: "Provider Label",
-            text: $model.modelProviderLabelReference,
-            preview: model.modelConfigurationPreview.providerLabel,
-            masksResolvedValue: false
-          )
-        }
-        .padding(8)
-      } label: {
-        Text("LLM")
-          .font(.headline)
-      }
-
-      GroupBox {
-        VStack(alignment: .leading, spacing: 14) {
-          HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
-              Text("Provider")
-                .font(.headline)
-              Text(model.realtimeTranscriptionConfigurationPreview.provider)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            VStack(alignment: .leading, spacing: 4) {
-              Text("Model")
-                .font(.headline)
-              Text(model.realtimeTranscriptionConfigurationPreview.model)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-            }
-            .frame(width: 240, alignment: .leading)
-          }
-
-          configurationField(
-            title: "Realtime API Key",
-            text: .constant("$OPENAI_API_KEY"),
-            preview: model.realtimeTranscriptionConfigurationPreview.apiKey,
-            masksResolvedValue: true
-          )
-
-          HStack(spacing: 12) {
-            Button("Test Realtime") {
-              Task {
-                await model.testRealtimeTranscriptionConfiguration()
-              }
-            }
-            .buttonStyle(.bordered)
-            .disabled(model.isTestingRealtimeTranscriptionConfiguration || !model.realtimeTranscriptionConfigurationPreview.isValid)
-
-            if model.isTestingRealtimeTranscriptionConfiguration {
-              ProgressView()
-                .controlSize(.small)
-            }
-
-            Text(model.realtimeTranscriptionStatusMessage.isEmpty ? "High Quality sends live meeting audio to OpenAI. Local keeps live transcription on Apple Speech." : model.realtimeTranscriptionStatusMessage)
-              .font(.caption)
-              .foregroundStyle(model.realtimeTranscriptionConfigurationPreview.isValid ? Color.secondary : Color.red)
-          }
-        }
-        .padding(8)
-      } label: {
-        Text("Realtime Transcription")
-          .font(.headline)
-      }
-
-      HStack(spacing: 12) {
-        Button("Test Connection") {
-          Task {
-            await model.testModelConfiguration()
-          }
-        }
-        .buttonStyle(.bordered)
-        .disabled(model.isTestingModelConfiguration || !model.modelConfigurationPreview.isValid)
-
-        Button("Save") {
-          model.saveModelConfiguration()
-        }
-        .buttonStyle(.borderedProminent)
-
-        if model.isTestingModelConfiguration {
-          ProgressView()
-            .controlSize(.small)
-        }
-
-        Spacer()
-
-        Text(model.modelConfigurationStatusMessage)
-          .font(.subheadline)
-          .foregroundStyle(model.modelConfigurationPreview.isValid ? Color.secondary : Color.red)
-      }
-
-      Spacer()
+      .padding(8)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } label: {
+      Text("Data Directory")
+        .font(.headline)
     }
-    .padding(24)
-    .frame(minWidth: 680, minHeight: 650, alignment: .topLeading)
   }
 
   @ViewBuilder

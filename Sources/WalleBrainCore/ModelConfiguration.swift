@@ -12,17 +12,21 @@ public struct ModelConfiguration: Codable, Sendable, Hashable {
   public var apiKeyReference: String
   public var modelsReference: String
   public var providerLabelReference: String
+  /// After-meeting processing tiers (Codex CLI → Claude Code CLI → API by default) and their CLI options.
+  public var postProcessing: PostProcessingConfiguration
 
   public init(
     baseURLReference: String = ModelConfiguration.defaultBaseURLReference,
     apiKeyReference: String = ModelConfiguration.defaultAPIKeyReference,
     modelsReference: String = ModelConfiguration.defaultModelsReference,
-    providerLabelReference: String = ModelConfiguration.defaultProviderLabelReference
+    providerLabelReference: String = ModelConfiguration.defaultProviderLabelReference,
+    postProcessing: PostProcessingConfiguration = PostProcessingConfiguration()
   ) {
     self.baseURLReference = baseURLReference
     self.apiKeyReference = apiKeyReference
     self.modelsReference = modelsReference
     self.providerLabelReference = providerLabelReference
+    self.postProcessing = postProcessing
   }
 }
 
@@ -89,7 +93,8 @@ public struct ModelConfigurationStore {
       baseURLReference: defaults.string(forKey: Keys.baseURLReference) ?? ModelConfiguration.defaultBaseURLReference,
       apiKeyReference: defaults.string(forKey: Keys.apiKeyReference) ?? ModelConfiguration.defaultAPIKeyReference,
       modelsReference: effectiveModelsReference,
-      providerLabelReference: defaults.string(forKey: Keys.providerLabelReference) ?? ModelConfiguration.defaultProviderLabelReference
+      providerLabelReference: defaults.string(forKey: Keys.providerLabelReference) ?? ModelConfiguration.defaultProviderLabelReference,
+      postProcessing: PostProcessingConfiguration.load(from: defaults)
     )
   }
 
@@ -98,6 +103,7 @@ public struct ModelConfigurationStore {
     defaults.set(configuration.apiKeyReference, forKey: Keys.apiKeyReference)
     defaults.set(configuration.modelsReference, forKey: Keys.modelsReference)
     defaults.set(configuration.providerLabelReference, forKey: Keys.providerLabelReference)
+    configuration.postProcessing.save(to: defaults)
   }
 }
 

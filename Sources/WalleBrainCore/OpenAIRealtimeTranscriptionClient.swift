@@ -83,6 +83,7 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
   private let configuration: RealtimeTranscriptionConfiguration
   private let networkPolicy: NetworkTransportPolicy
   private let debugLogURL: URL?
+  private let finalReceiveDrain: Duration
   private let decoder = JSONDecoder()
   private var webSocketTask: URLSessionWebSocketTask?
   private var itemTimingByID: [String: ItemTiming] = [:]
@@ -95,11 +96,13 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
   public init(
     configuration: RealtimeTranscriptionConfiguration,
     networkPolicy: NetworkTransportPolicy = .realtimeDefault(),
-    debugLogURL: URL? = nil
+    debugLogURL: URL? = nil,
+    finalReceiveDrain: Duration = .milliseconds(1_500)
   ) {
     self.configuration = configuration
     self.networkPolicy = networkPolicy
     self.debugLogURL = debugLogURL
+    self.finalReceiveDrain = finalReceiveDrain
   }
 
   public convenience init(
@@ -326,7 +329,7 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
       log("final commit pendingSeconds=\(String(format: "%.2f", pendingAudioSeconds))")
       try await commitAudioBuffer()
     }
-    try? await Task.sleep(for: .milliseconds(1_500))
+    try? await Task.sleep(for: finalReceiveDrain)
     return SessionAudioResult(shouldRotate: false, audioSecondsSent: sessionAudioSeconds)
   }
 
@@ -717,7 +720,7 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
     if !trimmedPrompt.isEmpty, supportsPrompt(model: configuration.model) {
       transcription["prompt"] = trimmedPrompt
     }
-    if requiresManualTurnDetection(model: configuration.model) {
+    if supportsLowDelayTranscriptionOption(model: configuration.model) {
       transcription["delay"] = "low"
     }
 
@@ -728,14 +731,10 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
       ],
       "transcription": transcription,
     ]
-    if !requiresManualTurnDetection(model: configuration.model) {
-      input["noise_reduction"] = [
-        "type": "near_field",
-      ]
-    }
-    if requiresManualTurnDetection(model: configuration.model) {
-      input["turn_detection"] = NSNull()
-    }
+    input["noise_reduction"] = [
+      "type": "near_field",
+    ]
+    input["turn_detection"] = NSNull()
 
     let payload: [String: Any] = [
       "session": [
@@ -838,7 +837,7 @@ public final class OpenAIRealtimeTranscriptionClient: @unchecked Sendable {
     !model.lowercased().contains("gpt-realtime-whisper")
   }
 
-  private static func requiresManualTurnDetection(model: String) -> Bool {
+  private static func supportsLowDelayTranscriptionOption(model: String) -> Bool {
     model.lowercased().contains("gpt-realtime-whisper")
   }
 

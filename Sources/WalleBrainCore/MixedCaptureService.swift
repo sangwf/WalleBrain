@@ -34,6 +34,7 @@ public final class MixedCaptureService: @unchecked Sendable {
   private var microphoneQueue: [QueuedInput] = []
   private var systemQueue: [QueuedInput] = []
   private var temporaryFiles: [URL] = []
+  private var systemAudioURL: URL?
 
   public func start(
     microphoneDevice: AudioInputDevice,
@@ -51,9 +52,11 @@ public final class MixedCaptureService: @unchecked Sendable {
       try FileManager.default.removeItem(at: outputURL)
     }
 
-    let microphoneTemp = temporaryURL(for: outputURL, suffix: "mic")
-    let systemTemp = temporaryURL(for: outputURL, suffix: "system")
-    temporaryFiles = [microphoneTemp, systemTemp]
+    let microphoneTemp = MeetingAudioFiles.microphoneCaptureURL(forPrimary: outputURL)
+    let systemAudio = MeetingAudioFiles.systemAudioURL(forPrimary: outputURL)
+    // Only the microphone capture is temporary; the system audio file is a kept artifact.
+    temporaryFiles = [microphoneTemp]
+    systemAudioURL = systemAudio
 
     for url in temporaryFiles where FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
       try FileManager.default.removeItem(at: url)
@@ -73,7 +76,7 @@ public final class MixedCaptureService: @unchecked Sendable {
       )
       let systemCapture = try await systemAudioRecorder.start(
         device: systemAudioDevice,
-        outputURL: systemTemp,
+        outputURL: systemAudio,
         targetFormat: targetFormat
       )
 
@@ -103,7 +106,8 @@ public final class MixedCaptureService: @unchecked Sendable {
         inputDevice: AudioInputCatalog.makeMixedInput(for: microphoneDevice),
         audioFileURL: outputURL,
         audioFormat: configuredFormat,
-        stream: stream
+        stream: stream,
+        systemAudioFileURL: systemAudio
       )
     } catch {
       try? await microphoneRecorder.stop()
@@ -115,6 +119,7 @@ public final class MixedCaptureService: @unchecked Sendable {
         systemQueue.removeAll()
       }
       self.outputURL = nil
+      systemAudioURL = nil
       nextBufferStartTime = nil
       removeTemporaryFiles()
       throw error
@@ -140,6 +145,7 @@ public final class MixedCaptureService: @unchecked Sendable {
 
     try finalizeOutputFile()
     outputURL = nil
+    systemAudioURL = nil
     nextBufferStartTime = nil
     removeTemporaryFiles()
   }
@@ -215,7 +221,14 @@ public final class MixedCaptureService: @unchecked Sendable {
     let fileManager = FileManager.default
     let existingSources = waitForAvailableSources(fileManager: fileManager)
 
-    guard let bestSource = try bestAvailableSource(from: existingSources) else {
+    // The primary recording is the microphone capture. The system audio is copied in only when
+    // the microphone produced nothing, so a meeting always keeps some playable primary audio.
+    let microphoneSource = try bestAvailableSource(from: existingSources)
+    let microphoneSize = microphoneSource.flatMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize } ?? 0
+    guard let bestSource = microphoneSize > 0
+      ? microphoneSource
+      : nonEmptySystemAudio(fileManager: fileManager) ?? microphoneSource
+    else {
       return
     }
 
@@ -273,17 +286,18 @@ public final class MixedCaptureService: @unchecked Sendable {
     return bestSize > 0 ? bestURL : candidates.first
   }
 
+  private func nonEmptySystemAudio(fileManager: FileManager) -> URL? {
+    guard let systemAudioURL, fileManager.fileExists(atPath: systemAudioURL.path(percentEncoded: false)) else {
+      return nil
+    }
+    return MeetingAudioFiles.containsAudio(at: systemAudioURL) ? systemAudioURL : nil
+  }
+
   private func removeTemporaryFiles() {
     for url in temporaryFiles where FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
       try? FileManager.default.removeItem(at: url)
     }
     temporaryFiles.removeAll()
-  }
-
-  private func temporaryURL(for outputURL: URL, suffix: String) -> URL {
-    let base = outputURL.deletingPathExtension()
-    return base.deletingLastPathComponent()
-      .appending(path: "\(base.lastPathComponent).\(suffix).caf", directoryHint: .notDirectory)
   }
 
   private func earliestTimestamp(_ lhs: CMTime?, _ rhs: CMTime?) -> CMTime? {

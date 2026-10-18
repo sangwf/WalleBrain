@@ -5,6 +5,37 @@ import Foundation
 import WalleBrainCore
 
 @MainActor
+final class AudioMeterModel: ObservableObject {
+  @Published var rmsLevel: Double = 0
+  @Published var peakLevel: Double = 0
+  @Published var isReceivingAudio = false
+
+  func update(_ snapshot: AudioLevelSnapshot) {
+    rmsLevel = snapshot.rmsLevel
+    peakLevel = snapshot.peakLevel
+    isReceivingAudio = snapshot.isReceivingAudio
+  }
+
+  func reset() {
+    rmsLevel = 0
+    peakLevel = 0
+    isReceivingAudio = false
+  }
+
+  var statusText: String {
+    if peakLevel < 0.018 && rmsLevel < 0.007 {
+      return "Weak"
+    }
+
+    return isReceivingAudio ? "Audio" : "Quiet"
+  }
+
+  var normalizedLevel: Double {
+    min(1, max(peakLevel * 10, rmsLevel * 18))
+  }
+}
+
+@MainActor
 final class AppModel: ObservableObject {
   enum SidebarItem: String, CaseIterable, Identifiable {
     case meeting = "Meetings"
@@ -33,13 +64,14 @@ final class AppModel: ObservableObject {
   @Published var modelAPIKeyReference = ModelConfiguration.defaultAPIKeyReference
   @Published var modelsReference = ModelConfiguration.defaultModelsReference
   @Published var modelProviderLabelReference = ModelConfiguration.defaultProviderLabelReference
+  @Published var postProcessingConfiguration = PostProcessingConfiguration()
+  @Published var localCLIStatusMessages: [PostProcessingTier: String] = [:]
+  @Published var checkingLocalCLITiers: Set<PostProcessingTier> = []
   @Published var modelConfigurationStatusMessage = ""
   @Published var isTestingModelConfiguration = false
   @Published var realtimeTranscriptionStatusMessage = ""
   @Published var isTestingRealtimeTranscriptionConfiguration = false
-  @Published var audioLevel: Double = 0
-  @Published var audioPeakLevel: Double = 0
-  @Published var isReceivingAudio = false
+  let audioMeter = AudioMeterModel()
   @Published var transcriptionQualityMode: TranscriptionQualityMode = .local {
     didSet {
       UserDefaults.standard.set(transcriptionQualityMode.rawValue, forKey: Self.transcriptionQualityModeDefaultsKey)
@@ -51,7 +83,10 @@ final class AppModel: ObservableObject {
     }
   }
 
-  private let paths = RuntimePaths()
+  let dataDirectory: ResolvedDataDirectory
+  @Published var pendingDataDirectoryPath: String?
+  @Published var dataDirectoryStatusMessage = ""
+  private let paths: RuntimePaths
   private static let transcriptionQualityModeDefaultsKey = "WalleBrain.TranscriptionQualityMode"
   private static let transcriptionLanguageModeDefaultsKey = "WalleBrain.TranscriptionLanguageMode"
   private var liveCoordinator: LiveMeetingCoordinator
@@ -63,6 +98,9 @@ final class AppModel: ObservableObject {
   private var manualTranscriptSaveVersion = 0
 
   init() {
+    let dataDirectory = DataDirectorySettingsStore().resolveAndRecordDefault(using: .live())
+    self.dataDirectory = dataDirectory
+    paths = RuntimePaths(baseDirectory: dataDirectory.url)
     meetingTitle = Self.defaultMeetingTitle()
     transcriptionQualityMode = TranscriptionQualityMode(
       rawValue: UserDefaults.standard.string(forKey: Self.transcriptionQualityModeDefaultsKey) ?? ""
@@ -106,9 +144,7 @@ final class AppModel: ObservableObject {
       },
       onAudioLevel: { [weak self] snapshot in
         await MainActor.run {
-          self?.audioLevel = snapshot.rmsLevel
-          self?.audioPeakLevel = snapshot.peakLevel
-          self?.isReceivingAudio = snapshot.isReceivingAudio
+          self?.audioMeter.update(snapshot)
         }
       }
     )
@@ -120,6 +156,9 @@ final class AppModel: ObservableObject {
     refreshAudioInputs()
     await recoverInterruptedSessions()
     await loadRecentSessions()
+    appendAppDebugLog(
+      "launch bundle=\(Bundle.main.bundleURL.path(percentEncoded: false)) dataDirectory=\(dataDirectoryPath) source=\(dataDirectory.source.rawValue) sessions=\(recentSessions.count)"
+    )
     if currentSession == nil {
       prepareNewMeetingDraft()
     } else if currentSession?.status != .recording {
@@ -207,6 +246,7 @@ final class AppModel: ObservableObject {
     modelAPIKeyReference = configuration.apiKeyReference
     modelsReference = configuration.modelsReference
     modelProviderLabelReference = configuration.providerLabelReference
+    postProcessingConfiguration = configuration.postProcessing
     if modelConfigurationStatusMessage.isEmpty {
       modelConfigurationStatusMessage = "Ready"
     }
@@ -433,11 +473,13 @@ final class AppModel: ObservableObject {
       }
       try await liveCoordinator.stopMeetingAndProcess()
       resetAudioLevel()
-      if let session = currentSession, [.processing, .exported, .failed].contains(session.status) {
+      if let session = currentSession, [.processing, .organized, .exported, .failed].contains(session.status) {
         upsertRecentSession(session)
         switch session.status {
         case .processing:
           statusMessage = "Processing \(session.title) in background."
+        case .organized:
+          statusMessage = "Organized transcript ready; structured analysis can be retried."
         case .exported:
           statusMessage = "Exported \(session.title) via \(session.model ?? "local")."
         case .failed:
@@ -511,6 +553,8 @@ final class AppModel: ObservableObject {
 
       if session.status == .exported {
         statusMessage = "Regenerated notes via \(session.model ?? "local")."
+      } else if session.status == .organized {
+        statusMessage = "Organized transcript regenerated; structured analysis is still pending."
       } else {
         statusMessage = "AI post-process failed; exported a transcript-only note."
       }
@@ -523,6 +567,7 @@ final class AppModel: ObservableObject {
     guard !isMeetingActionInFlight, canReprocessCurrentSession, var session = currentSession else {
       return
     }
+    let reuseExistingOrganizedTranscript = session.status == .organized
 
     isMeetingActionInFlight = true
     defer { isMeetingActionInFlight = false }
@@ -535,7 +580,10 @@ final class AppModel: ObservableObject {
       statusMessage = "Retrying AI post-processing for \(session.title)."
       try await MeetingSessionStore(paths: paths).save(session)
 
-      session = try await MeetingPostProcessor(paths: paths).process(session)
+      session = try await MeetingPostProcessor(paths: paths).process(
+        session,
+        reuseExistingOrganizedTranscript: reuseExistingOrganizedTranscript
+      )
       currentSession = session
       upsertRecentSession(session)
       lastExportPath = session.exportedNotePath ?? lastExportPath
@@ -544,6 +592,8 @@ final class AppModel: ObservableObject {
 
       if session.status == .exported {
         statusMessage = "Regenerated notes via \(session.model ?? "local")."
+      } else if session.status == .organized {
+        statusMessage = "Organized transcript is ready; structured analysis still needs another retry."
       } else {
         statusMessage = "AI post-process failed again; kept a transcript-only note."
       }
@@ -717,6 +767,8 @@ final class AppModel: ObservableObject {
       return "Recording \(session.title) via \(session.selectedInput?.name ?? "unknown input")."
     case .processing:
       return "Processing \(session.title)..."
+    case .organized:
+      return "Organized transcript ready for \(session.title); structured analysis is pending."
     case .exported:
       return "Exported \(session.title) via \(session.model ?? "local")."
     case .failed:
@@ -730,7 +782,7 @@ final class AppModel: ObservableObject {
       return "WalleBrain quit before this meeting was stopped. The partial transcript and audio were preserved."
     case .processing:
       return "WalleBrain quit while AI post-processing was running. The transcript was preserved; use Retry AI to regenerate notes."
-    case .idle, .exported, .failed:
+    case .idle, .organized, .exported, .failed:
       return "WalleBrain quit before this meeting completed."
     }
   }
@@ -769,9 +821,7 @@ final class AppModel: ObservableObject {
   }
 
   private func resetAudioLevel() {
-    audioLevel = 0
-    audioPeakLevel = 0
-    isReceivingAudio = false
+    audioMeter.reset()
   }
 
   private func normalizedMeetingTitle(from rawTitle: String) -> String {
@@ -791,7 +841,8 @@ final class AppModel: ObservableObject {
       baseURLReference: modelBaseURLReference,
       apiKeyReference: modelAPIKeyReference,
       modelsReference: modelsReference,
-      providerLabelReference: modelProviderLabelReference
+      providerLabelReference: modelProviderLabelReference,
+      postProcessing: postProcessingConfiguration
     )
   }
 
@@ -974,22 +1025,6 @@ final class AppModel: ObservableObject {
     return preview.apiKey.errorMessage ?? "OPENAI_API_KEY is unavailable."
   }
 
-  var audioInputStatusText: String {
-    guard currentSession?.status == .recording else {
-      return "Idle"
-    }
-
-    if audioPeakLevel < 0.018 && audioLevel < 0.007 {
-      return "Weak"
-    }
-
-    return isReceivingAudio ? "Audio" : "Quiet"
-  }
-
-  var normalizedAudioMeterLevel: Double {
-    min(1, max(audioPeakLevel * 10, audioLevel * 18))
-  }
-
   func maskedResolvedValue(for value: ResolvedConfigurationValue) -> String {
     guard let resolvedValue = value.resolvedValue, !resolvedValue.isEmpty else {
       return "Unavailable"
@@ -1034,6 +1069,71 @@ final class AppModel: ObservableObject {
     }
 
     NSWorkspace.shared.open(url)
+  }
+
+  var dataDirectoryPath: String {
+    Self.displayPath(dataDirectory.url)
+  }
+
+  var meetingSessionsDirectoryPath: String {
+    Self.displayPath(paths.nativeMeetingSessionsDirectory)
+  }
+
+  var dataDirectorySourceDescription: String {
+    switch dataDirectory.source {
+    case .environment:
+      "Set by WALLEBRAIN_BASE_DIR. Unset it to use the folder chosen here."
+    case .developmentCheckout:
+      "This build runs from a source checkout and always uses that checkout's runtime folder."
+    case .settings:
+      "Chosen in Settings."
+    case .bundledDefault:
+      "Default: the repository runtime folder that existed when this app was installed."
+    case .applicationSupport:
+      "Default for a fresh install."
+    }
+  }
+
+  func chooseDataDirectory() {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.canCreateDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.prompt = "Use Folder"
+    panel.message = "Choose the folder that contains (or will contain) WalleBrain's runtime/ data. Existing data is not moved."
+    panel.directoryURL = dataDirectory.url
+    guard panel.runModal() == .OK, let url = panel.url else {
+      return
+    }
+
+    let store = DataDirectorySettingsStore()
+    store.save(url)
+    let chosenPath = Self.displayPath(url)
+    if chosenPath == dataDirectoryPath {
+      pendingDataDirectoryPath = nil
+      dataDirectoryStatusMessage = ""
+      return
+    }
+
+    pendingDataDirectoryPath = chosenPath
+    let chosenPaths = RuntimePaths(baseDirectory: url)
+    let hasExistingData = FileManager.default.fileExists(
+      atPath: chosenPaths.nativeMeetingSessionsDirectory.path(percentEncoded: false)
+    )
+    dataDirectoryStatusMessage = (hasExistingData
+      ? "Found existing WalleBrain data there."
+      : "No WalleBrain data there yet; an empty library will be created.")
+      + " Quit and reopen WalleBrain to switch. Nothing is moved or copied."
+  }
+
+  func revealDataDirectory() {
+    NSWorkspace.shared.activateFileViewerSelecting([paths.runtimeDirectory])
+  }
+
+  private static func displayPath(_ url: URL) -> String {
+    let path = url.standardizedFileURL.path(percentEncoded: false)
+    return path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
   }
 
   private func handleMeetingStartError(_ error: Error) {
@@ -1143,7 +1243,7 @@ final class AppModel: ObservableObject {
       return false
     }
 
-    return [.exported, .failed].contains(currentSession.status)
+    return [.organized, .exported, .failed].contains(currentSession.status)
       && !currentSession.liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
@@ -1153,7 +1253,7 @@ final class AppModel: ObservableObject {
     }
 
     return activeLiveSessionID != currentSession.id
-      && [.exported, .failed].contains(currentSession.status)
+      && [.organized, .exported, .failed].contains(currentSession.status)
       && !currentSession.liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
@@ -1278,6 +1378,7 @@ final class AppModel: ObservableObject {
         relatedPeople: session.relatedPeople ?? [],
         dictionaryPath: session.dictionaryPath,
         audioFilePath: session.audioFilePath,
+        systemAudioFilePath: session.systemAudioFilePath,
         provider: session.provider ?? "local",
         model: session.model ?? "manual-revision"
       )

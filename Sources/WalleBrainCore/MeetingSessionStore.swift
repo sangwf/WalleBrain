@@ -60,6 +60,7 @@ public actor MeetingSessionStore {
     try deleteFileIfExists(at: session.sessionJSONPath)
     try deleteFileIfExists(at: session.sessionMarkdownPath)
     try deleteFileIfExists(at: session.audioFilePath)
+    try deleteFileIfExists(at: session.systemAudioFilePath ?? "")
 
     if let exportedNotePath = session.exportedNotePath, !exportedNotePath.isEmpty {
       try deleteFileIfExists(at: exportedNotePath)
@@ -170,6 +171,7 @@ public actor MeetingSessionStore {
     started_at: \(iso.string(from: session.startedAt))
     ended_at: \(ended)
     audio_file: \(session.audioFilePath)
+    system_audio_file: \(session.systemAudioFilePath ?? "")
     dictionary_file: \(session.dictionaryPath)
     input_device: \(session.selectedInput?.name ?? "")
     transcription_provider: \(session.transcriptionProvider ?? "")

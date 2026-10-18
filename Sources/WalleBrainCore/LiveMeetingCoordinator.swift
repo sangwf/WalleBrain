@@ -3,10 +3,11 @@ import Foundation
 import Speech
 
 public actor LiveMeetingCoordinator {
+  static let localSpeechStopDrainTimeoutSeconds: Double = 30
+
   private let paths: RuntimePaths
   private let permissionCoordinator = PermissionCoordinator()
   private let dictionaryStore: TermDictionaryStore
-  private let compiler: CustomLanguageModelCompiler
   private let sessionStore: MeetingSessionStore
   private let postProcessor: MeetingPostProcessor
   private let microphoneRecorder = MicrophoneCaptureService()
@@ -15,7 +16,10 @@ public actor LiveMeetingCoordinator {
   private let onUpdate: @Sendable (NativeMeetingSession) async -> Void
   private let onAudioLevel: @Sendable (AudioLevelSnapshot) async -> Void
   private let realtimePreviewEmitInterval: Duration = .milliseconds(300)
+  private let localSpeechEmitInterval: Duration = .milliseconds(800)
+  private let localSpeechPersistInterval: Duration = .seconds(3)
   private let realtimeStopDrainTimeout: Duration = .seconds(3)
+  private let localSpeechStopDrainTimeout: Duration = .seconds(30)
 
   private var currentSession: NativeMeetingSession?
   private var analyzer: SpeechAnalyzer?
@@ -29,8 +33,11 @@ public actor LiveMeetingCoordinator {
   private let transcriptAssembler = TranscriptAssembler()
   private var realtimeStableTranscript = ""
   private var lastRealtimePreviewEmitAt: ContinuousClock.Instant?
+  private var lastLocalSpeechEmitAt: ContinuousClock.Instant?
+  private var lastLocalSpeechPersistAt: ContinuousClock.Instant?
   private var isStoppingMeeting = false
   private var activeInputID: String?
+  private var liveVocabulary = LiveSpeechVocabulary.empty
   private let liveDebugEnabled = ProcessInfo.processInfo.environment["WALLEBRAIN_DEBUG_LIVE"] == "1"
   private let liveDisableResultsTask = ProcessInfo.processInfo.environment["WALLEBRAIN_DISABLE_RESULTS_TASK"] == "1"
   private let liveDisableAnalyzerTask = ProcessInfo.processInfo.environment["WALLEBRAIN_DISABLE_ANALYZER_TASK"] == "1"
@@ -42,7 +49,6 @@ public actor LiveMeetingCoordinator {
   ) {
     self.paths = paths
     self.dictionaryStore = TermDictionaryStore(paths: paths)
-    self.compiler = CustomLanguageModelCompiler(paths: paths)
     self.sessionStore = MeetingSessionStore(paths: paths)
     self.postProcessor = MeetingPostProcessor(paths: paths)
     self.onUpdate = onUpdate
@@ -100,13 +106,14 @@ public actor LiveMeetingCoordinator {
       realtimeConfiguration = nil
     }
 
+    liveVocabulary = .empty
     if !isManualInput && effectiveTranscriptionMode == .local {
       let speechStatus = await permissionCoordinator.requestSpeechAccess()
       guard speechStatus == .authorized else {
         throw WalleBrainError.invalidResponse("Speech recognition access was denied.")
       }
 
-      _ = try await dictionaryStore.loadDictionary()
+      liveVocabulary = await loadLiveSpeechVocabulary()
     }
 
     let startedAt = Date()
@@ -121,6 +128,8 @@ public actor LiveMeetingCoordinator {
     transcriptChunks = [:]
     realtimeStableTranscript = ""
     lastRealtimePreviewEmitAt = nil
+    lastLocalSpeechEmitAt = nil
+    lastLocalSpeechPersistAt = nil
     await trace("session created json=\(session.sessionJSONPath) audio=\(session.audioFilePath)")
     await emit(session)
 
@@ -179,7 +188,8 @@ public actor LiveMeetingCoordinator {
           outputURL: URL(fileURLWithPath: session.audioFilePath),
           targetFormat: analyzerFormat
         )
-        await trace("mixed capture started")
+        session.systemAudioFilePath = capture.systemAudioFileURL?.path(percentEncoded: false)
+        await trace("mixed capture started systemAudio=\(session.systemAudioFilePath ?? "nil")")
       } else if AudioInputCatalog.isSystemAudioInput(id: selectedInput.id) {
         capture = try await systemAudioRecorder.start(
           device: selectedInput,
@@ -221,7 +231,7 @@ public actor LiveMeetingCoordinator {
           debugLogURL: paths.nativeDirectory.appending(path: "realtime-debug.log", directoryHint: .notDirectory)
         )
         self.realtimeTranscriber = realtimeTranscriber
-        let dictionary = try await dictionaryStore.loadDictionary()
+        let dictionary = await loadLiveSpeechVocabulary().dictionary
         realtimeResultsTask = makeRealtimeResultsTask(
           transcriber: realtimeTranscriber,
           stream: meteredStream,
@@ -234,12 +244,11 @@ public actor LiveMeetingCoordinator {
         guard let transcriber, let resolvedLocalLocale else {
           throw WalleBrainError.invalidResponse("Local speech transcriber was not initialized.")
         }
-        try await prepareCustomLanguageAssets(for: resolvedLocalLocale)
-
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         await debug("analyzer-created")
         try await analyzer.prepareToAnalyze(in: capture.audioFormat)
         await debug("analyzer-prepared")
+        await applyContextualStrings(to: analyzer, locale: resolvedLocalLocale)
         self.analyzer = analyzer
 
         if liveDisableAnalyzerTask {
@@ -278,17 +287,17 @@ public actor LiveMeetingCoordinator {
     do {
       if !isManualInput {
         isStoppingMeeting = true
+        await trace("stopMeeting capture stop start session=\(processingSessionID.uuidString)")
         try await stopActiveCapture()
+        await trace("stopMeeting capture stop done session=\(processingSessionID.uuidString)")
         try await ensurePrimaryAudioArtifactExists(for: session)
+        await trace("stopMeeting primary audio ready session=\(processingSessionID.uuidString)")
+        await dropMissingSystemAudioFile()
         if let realtimeResultsTask {
           await waitForRealtimeResultsDuringStop(realtimeResultsTask)
           self.realtimeResultsTask = nil
         } else {
-          try await analyzer?.finalizeAndFinishThroughEndOfInput()
-          _ = try await analyzerTask?.value
-          analyzerTask = nil
-          await resultsTask?.value
-          resultsTask = nil
+          try await waitForLocalSpeechResultsDuringStop()
         }
         isStoppingMeeting = false
       }
@@ -368,7 +377,7 @@ public actor LiveMeetingCoordinator {
     let startSeconds = result.range.start.seconds.isFinite ? result.range.start.seconds : 0
     let durationSeconds = result.range.duration.seconds.isFinite ? result.range.duration.seconds : 0
     let id = Self.chunkID(startSeconds: startSeconds, durationSeconds: durationSeconds)
-    let text = String(result.text.characters)
+    let text = liveVocabulary.termRepair.apply(to: String(result.text.characters))
     await debug("consume-text-ready")
     let chunk = TranscriptChunk(
       id: id,
@@ -386,11 +395,7 @@ public actor LiveMeetingCoordinator {
 
     currentSession = session
 
-    do {
-      try await persistCurrentSession()
-    } catch {
-      await fail(message: error.localizedDescription)
-    }
+    await emitOrPersistLocalSpeechUpdate()
   }
 
   private func consume(_ result: RealtimeTranscriptionResult) async {
@@ -489,6 +494,49 @@ public actor LiveMeetingCoordinator {
     await emit(session)
   }
 
+  private func emitOrPersistLocalSpeechUpdate() async {
+    guard let currentSession else {
+      return
+    }
+
+    let now = ContinuousClock.now
+    if shouldPersistLocalSpeechUpdate(now: now) {
+      lastLocalSpeechPersistAt = now
+      lastLocalSpeechEmitAt = now
+      do {
+        try await persistCurrentSession()
+      } catch {
+        await fail(message: error.localizedDescription)
+      }
+      return
+    }
+
+    if shouldEmitLocalSpeechUpdate(now: now) {
+      lastLocalSpeechEmitAt = now
+      await emit(currentSession)
+    }
+  }
+
+  private func shouldPersistLocalSpeechUpdate(now: ContinuousClock.Instant) -> Bool {
+    if isStoppingMeeting {
+      return true
+    }
+
+    guard let lastLocalSpeechPersistAt else {
+      return true
+    }
+
+    return lastLocalSpeechPersistAt.duration(to: now) >= localSpeechPersistInterval
+  }
+
+  private func shouldEmitLocalSpeechUpdate(now: ContinuousClock.Instant) -> Bool {
+    guard let lastLocalSpeechEmitAt else {
+      return true
+    }
+
+    return lastLocalSpeechEmitAt.duration(to: now) >= localSpeechEmitInterval
+  }
+
   private func fail(message: String) async {
     guard var session = currentSession else {
       await trace("fail without currentSession message=\(message)")
@@ -514,6 +562,8 @@ public actor LiveMeetingCoordinator {
     realtimeResultsTask = nil
     realtimeStableTranscript = ""
     lastRealtimePreviewEmitAt = nil
+    lastLocalSpeechEmitAt = nil
+    lastLocalSpeechPersistAt = nil
     isStoppingMeeting = false
     activeInputID = nil
   }
@@ -621,6 +671,51 @@ public actor LiveMeetingCoordinator {
     }
   }
 
+  private func waitForLocalSpeechResultsDuringStop() async throws {
+    let timeout = localSpeechStopDrainTimeout
+    let analyzer = analyzer
+    let analyzerTask = analyzerTask
+    let resultsTask = resultsTask
+
+    await trace("local speech stop drain start timeoutSeconds=\(Self.localSpeechStopDrainTimeoutSeconds)")
+    let stopTask = Task {
+      try await analyzer?.finalizeAndFinishThroughEndOfInput()
+      _ = try await analyzerTask?.value
+      await resultsTask?.value
+    }
+
+    let finishedBeforeTimeout = try await withThrowingTaskGroup(of: Bool.self) { group in
+      group.addTask {
+        try await stopTask.value
+        return true
+      }
+
+      group.addTask {
+        try await Task.sleep(for: timeout)
+        stopTask.cancel()
+        return false
+      }
+
+      let result = try await group.next() ?? false
+      group.cancelAll()
+      return result
+    }
+
+    if finishedBeforeTimeout {
+      self.analyzerTask = nil
+      self.resultsTask = nil
+      await trace("local speech stop drain finished")
+      return
+    }
+
+    self.analyzerTask?.cancel()
+    self.resultsTask?.cancel()
+    self.analyzerTask = nil
+    self.resultsTask = nil
+    await trace("local speech stop drain timed out after \(Self.localSpeechStopDrainTimeoutSeconds)s")
+    throw WalleBrainError.invalidResponse("Apple Speech finalization timed out after \(Int(Self.localSpeechStopDrainTimeoutSeconds)) seconds. The audio and partial transcript were preserved; rerun offline transcription if needed.")
+  }
+
   private static func defaultLocalAudioFormat() -> AVAudioFormat {
     AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
   }
@@ -657,10 +752,34 @@ public actor LiveMeetingCoordinator {
     return localTranscriber
   }
 
-  private func prepareCustomLanguageAssets(for locale: Locale) async throws {
-    let dictionary = try await dictionaryStore.loadDictionary()
-    let assets = try await compiler.compile(dictionary: dictionary, locale: locale)
-    _ = await compiler.configuration(for: assets)
+  /// The dictionary only improves recognition; a missing or malformed dictionary must never block recording.
+  private func loadLiveSpeechVocabulary() async -> LiveSpeechVocabulary {
+    do {
+      let vocabulary = LiveSpeechVocabulary(dictionary: try await dictionaryStore.loadDictionary())
+      await trace("speech vocabulary ready terms=\(vocabulary.contextualStrings.count) repairable=\(vocabulary.termRepair.targetCount)")
+      return vocabulary
+    } catch {
+      await trace("speech vocabulary unavailable error=\(error.localizedDescription); continuing without term bias")
+      return .empty
+    }
+  }
+
+  /// `SpeechTranscriber` exposes no custom language model hook; contextual strings are the only
+  /// recognizer-side bias the SDK offers. Best-effort: failure leaves recognition unbiased.
+  private func applyContextualStrings(to analyzer: SpeechAnalyzer, locale: Locale) async {
+    let strings = liveVocabulary.contextualStrings
+    guard !strings.isEmpty else {
+      return
+    }
+
+    let context = AnalysisContext()
+    context.contextualStrings[.general] = strings
+    do {
+      try await analyzer.setContext(context)
+      await trace("speech contextual strings applied count=\(strings.count) locale=\(locale.identifier)")
+    } catch {
+      await trace("speech contextual strings failed error=\(error.localizedDescription); continuing without them")
+    }
   }
 
   private func meteredStream(from source: AsyncStream<AnalyzerInput>) -> AsyncStream<AnalyzerInput> {
@@ -852,13 +971,27 @@ public actor LiveMeetingCoordinator {
   }
 
   private func siblingAudioCandidates(for outputURL: URL) -> [URL] {
-    let base = outputURL.deletingPathExtension()
-    return [
-      base.deletingLastPathComponent()
-        .appending(path: "\(base.lastPathComponent).mic.caf", directoryHint: .notDirectory),
-      base.deletingLastPathComponent()
-        .appending(path: "\(base.lastPathComponent).system.caf", directoryHint: .notDirectory),
+    [
+      MeetingAudioFiles.microphoneCaptureURL(forPrimary: outputURL),
+      MeetingAudioFiles.systemAudioURL(forPrimary: outputURL),
     ]
+  }
+
+  /// Keeps `systemAudioFilePath` only when the system recording actually holds audio, so the
+  /// session never points at a file that is missing (e.g. Screen Recording access was denied).
+  private func dropMissingSystemAudioFile() async {
+    guard var session = currentSession, let path = session.systemAudioFilePath else {
+      return
+    }
+
+    let containsAudio = MeetingAudioFiles.containsAudio(at: URL(fileURLWithPath: path))
+    await trace("stopMeeting system audio path=\(path) containsAudio=\(containsAudio)")
+    guard !containsAudio else {
+      return
+    }
+
+    session.systemAudioFilePath = nil
+    currentSession = session
   }
 
   private func bestAvailableAudioSource(from candidates: [URL], fileManager: FileManager) throws -> URL? {

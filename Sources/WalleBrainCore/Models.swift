@@ -391,6 +391,18 @@ public struct LLMPostProcessingResult: Sendable, Hashable {
   }
 }
 
+public struct OrganizedTranscriptResult: Sendable, Hashable {
+  public let provider: String
+  public let model: String
+  public let transcript: String
+
+  public init(provider: String, model: String, transcript: String) {
+    self.provider = provider
+    self.model = model
+    self.transcript = transcript
+  }
+}
+
 public struct SummaryRevisionResult: Sendable, Hashable {
   public let provider: String
   public let model: String
@@ -466,6 +478,7 @@ public enum MeetingStatus: String, Codable, Sendable, Hashable {
   case preparing
   case recording
   case processing
+  case organized
   case exported
   case failed
 }
@@ -562,6 +575,9 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
   public var selectedInput: AudioInputDevice?
   public var dictionaryPath: String
   public var audioFilePath: String
+  /// Mixed mode: system audio recorded beside the microphone file. Nil for older sessions,
+  /// other inputs, or when no system audio was captured.
+  public var systemAudioFilePath: String?
   public var sessionJSONPath: String
   public var sessionMarkdownPath: String
   public var exportedNotePath: String?
@@ -600,6 +616,7 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
     selectedInput: AudioInputDevice? = nil,
     dictionaryPath: String,
     audioFilePath: String,
+    systemAudioFilePath: String? = nil,
     sessionJSONPath: String,
     sessionMarkdownPath: String,
     exportedNotePath: String? = nil,
@@ -637,6 +654,7 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
     self.selectedInput = selectedInput
     self.dictionaryPath = dictionaryPath
     self.audioFilePath = audioFilePath
+    self.systemAudioFilePath = systemAudioFilePath
     self.sessionJSONPath = sessionJSONPath
     self.sessionMarkdownPath = sessionMarkdownPath
     self.exportedNotePath = exportedNotePath
@@ -685,6 +703,7 @@ public struct NativeMeetingNote: Sendable, Hashable {
   public let relatedPeople: [PersonReference]
   public let dictionaryPath: String
   public let audioFilePath: String
+  public let systemAudioFilePath: String?
   public let provider: String
   public let model: String
 
@@ -706,6 +725,7 @@ public struct NativeMeetingNote: Sendable, Hashable {
     relatedPeople: [PersonReference] = [],
     dictionaryPath: String,
     audioFilePath: String,
+    systemAudioFilePath: String? = nil,
     provider: String,
     model: String
   ) {
@@ -726,6 +746,7 @@ public struct NativeMeetingNote: Sendable, Hashable {
     self.relatedPeople = relatedPeople
     self.dictionaryPath = dictionaryPath
     self.audioFilePath = audioFilePath
+    self.systemAudioFilePath = systemAudioFilePath
     self.provider = provider
     self.model = model
   }
