@@ -35,6 +35,7 @@ swift run WalleBrainAcceptance   # Run native acceptance tests
 swift run WalleBrainReprocessSession [--organize-only] [--tiers=codex,claude,api] <session.json>  # Re-run post-processing; rewrites the session JSON/MD in place at its recorded paths
 npm run native:bundle            # Code-sign and bundle WalleBrainApp as .app
 npm run native:open              # Bundle and open WalleBrainApp
+npm run native:install           # Release build, sign, install to /Applications/WalleBrain.app (quits a running installed copy)
 ```
 
 ## Architecture
@@ -83,7 +84,7 @@ Session Create → Recording → Live Transcription → Stop → Post-Processing
 
 ### Runtime Data (`runtime/`)
 
-Session files, audio recordings, exported notes, and evaluation datasets are stored under `runtime/` (gitignored). Structure:
+Session files, audio recordings, exported notes, and evaluation datasets are stored under `<data root>/runtime/`. The native data root is resolved by `DataDirectoryResolver` (`RuntimePaths.swift`) in this order: `WALLEBRAIN_BASE_DIR` → source checkout (cwd with `Package.swift`, or a bundle at `<checkout>/runtime/native/*.app`) → folder chosen in Settings (`WalleBrain.DataDirectory` default) → the repo root baked into an installed bundle's Info.plist → `~/Library/Application Support/WalleBrain`. Data is never moved between roots. Structure:
 - `runtime/WalleBrain/MeetingSessions/{year}/` — Session JSON and markdown
 - `runtime/WalleBrain/MeetingAudio/{year}/` — Audio files (.m4a)
 - `runtime/Obsidian/Meetings/{year}/` — Exported meeting notes

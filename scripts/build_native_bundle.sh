@@ -8,14 +8,20 @@ PRODUCT_NAME="${1:-WalleBrainApp}"
 BUNDLE_NAME="${2:-WalleBrain}"
 BUNDLE_ID="${3:-com.wallebrain.app}"
 SIGNING_IDENTITY="${WALLEBRAIN_CODESIGN_IDENTITY:-WalleBrain Local Signing}"
+# debug (default) or release.
+BUILD_CONFIGURATION="${WALLEBRAIN_BUILD_CONFIGURATION:-debug}"
+# Where the .app is written. Bundles under <checkout>/runtime/native use that checkout's data.
+BUNDLE_OUTPUT_DIR="${WALLEBRAIN_BUNDLE_OUTPUT_DIR:-$ROOT_DIR/runtime/native}"
+# Optional data root baked into Info.plist, used by installed copies when no folder is chosen in Settings.
+DEFAULT_DATA_DIR="${WALLEBRAIN_DEFAULT_DATA_DIR:-}"
 
-swift build --product "$PRODUCT_NAME" >&2
+swift build -c "$BUILD_CONFIGURATION" --product "$PRODUCT_NAME" >&2
 
-APP_DIR="$ROOT_DIR/runtime/native/${BUNDLE_NAME}.app"
+APP_DIR="$BUNDLE_OUTPUT_DIR/${BUNDLE_NAME}.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
-EXECUTABLE="$ROOT_DIR/.build/debug/$PRODUCT_NAME"
+EXECUTABLE="$(swift build -c "$BUILD_CONFIGURATION" --show-bin-path)/$PRODUCT_NAME"
 
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
@@ -81,6 +87,10 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
+
+if [[ -n "$DEFAULT_DATA_DIR" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :WalleBrainDefaultDataDirectory string $DEFAULT_DATA_DIR" "$CONTENTS_DIR/Info.plist"
+fi
 
 KEYCHAIN_PATH="$("$ROOT_DIR/scripts/ensure_local_codesign_identity.sh")"
 SIGNING_HASH="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk 'NR==1{print $2}')"
