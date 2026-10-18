@@ -1,6 +1,6 @@
 import Foundation
 
-public struct CodexProcessInvocation: Sendable, Equatable {
+public struct CLIProcessInvocation: Sendable, Equatable {
   public var executableURL: URL
   public var arguments: [String]
   public var environment: [String: String]
@@ -25,7 +25,7 @@ public struct CodexProcessInvocation: Sendable, Equatable {
   }
 }
 
-public struct CodexProcessOutput: Sendable, Equatable {
+public struct CLIProcessOutput: Sendable, Equatable {
   public var exitCode: Int32
   public var standardOutput: String
   public var standardError: String
@@ -37,18 +37,18 @@ public struct CodexProcessOutput: Sendable, Equatable {
   }
 }
 
-public protocol CodexProcessRunning: Sendable {
-  /// Runs the invocation to completion. Throws `CodexCLIError.timedOut` when the timeout elapses and
+public protocol CLIProcessRunning: Sendable {
+  /// Runs the invocation to completion. Throws `LocalCLIError.timedOut` when the timeout elapses and
   /// `CancellationError` when the calling task is cancelled; the child process is terminated in both cases.
-  func run(_ invocation: CodexProcessInvocation) async throws -> CodexProcessOutput
+  func run(_ invocation: CLIProcessInvocation) async throws -> CLIProcessOutput
 }
 
 /// Runs a child process directly (no shell). stdin/stdout/stderr go through temporary files rather than
 /// pipes so large transcripts can never deadlock on a full pipe buffer.
-public struct SystemCodexProcessRunner: CodexProcessRunning {
+public struct SystemCLIProcessRunner: CLIProcessRunning {
   public init() {}
 
-  public func run(_ invocation: CodexProcessInvocation) async throws -> CodexProcessOutput {
+  public func run(_ invocation: CLIProcessInvocation) async throws -> CLIProcessOutput {
     let fileManager = FileManager.default
     let ioDirectory = fileManager.temporaryDirectory
       .appending(path: "WalleBrainCodexIO-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -109,14 +109,14 @@ public struct SystemCodexProcessRunner: CodexProcessRunning {
 
     switch handle.stopReason {
     case .timedOut:
-      throw CodexCLIError.timedOut(seconds: Int(invocation.timeout.components.seconds))
+      throw LocalCLIError.timedOut(seconds: Int(invocation.timeout.components.seconds))
     case .cancelled:
       throw CancellationError()
     case nil:
       break
     }
 
-    return CodexProcessOutput(
+    return CLIProcessOutput(
       exitCode: exitCode,
       standardOutput: String(decoding: (try? Data(contentsOf: stdoutURL)) ?? Data(), as: UTF8.self),
       standardError: String(decoding: (try? Data(contentsOf: stderrURL)) ?? Data(), as: UTF8.self)

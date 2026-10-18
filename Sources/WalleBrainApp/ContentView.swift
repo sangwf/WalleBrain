@@ -1261,7 +1261,7 @@ private struct SettingsSheetView: View {
           .font(.subheadline)
           .foregroundStyle(.secondary)
 
-        postProcessingBackendGroup
+        PostProcessingSettingsView(model: model)
 
         GroupBox {
           VStack(alignment: .leading, spacing: 14) {
@@ -1290,7 +1290,7 @@ private struct SettingsSheetView: View {
           }
           .padding(8)
         } label: {
-          Text(model.postProcessingBackend == .codex ? "LLM API (fallback)" : "LLM API")
+          Text("LLM API")
             .font(.headline)
         }
 
@@ -1438,67 +1438,6 @@ private struct SettingsSheetView: View {
             .foregroundStyle(.red)
         }
       }
-    }
-  }
-
-  private var postProcessingBackendGroup: some View {
-    GroupBox {
-      VStack(alignment: .leading, spacing: 14) {
-        Picker("Backend", selection: $model.postProcessingBackend) {
-          ForEach(PostProcessingBackend.allCases) { backend in
-            Text(backend.displayName).tag(backend)
-          }
-        }
-        .pickerStyle(.segmented)
-
-        Text(
-          model.postProcessingBackend == .codex
-            ? "Organizes and summarizes meetings with the local Codex CLI (`codex exec`, read-only sandbox) and falls back to the LLM API below if Codex is missing or fails."
-            : "Organizes and summarizes meetings with the LLM API below only."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-
-        if model.postProcessingBackend == .codex {
-          VStack(alignment: .leading, spacing: 8) {
-            Text("Codex Binary")
-              .font(.headline)
-            TextField("Auto-detect (PATH, /opt/homebrew/bin, /usr/local/bin, ~/.local/bin)", text: $model.codexExecutablePath)
-              .textFieldStyle(.roundedBorder)
-          }
-
-          VStack(alignment: .leading, spacing: 8) {
-            Text("Codex Model")
-              .font(.headline)
-            TextField("Codex default (from ~/.codex/config.toml)", text: $model.codexModel)
-              .textFieldStyle(.roundedBorder)
-          }
-
-          HStack(spacing: 12) {
-            Button("Check Codex") {
-              Task {
-                await model.checkCodexInstallation()
-              }
-            }
-            .buttonStyle(.bordered)
-            .disabled(model.isCheckingCodex)
-
-            if model.isCheckingCodex {
-              ProgressView()
-                .controlSize(.small)
-            }
-
-            Text(model.codexStatusMessage)
-              .font(.caption)
-              .foregroundStyle(.secondary)
-              .textSelection(.enabled)
-          }
-        }
-      }
-      .padding(8)
-    } label: {
-      Text("After-Meeting Processing")
-        .font(.headline)
     }
   }
 

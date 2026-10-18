@@ -3,10 +3,10 @@ import Testing
 @testable import WalleBrainCore
 
 /// Exercises the real process runner with system binaries (never the Codex CLI).
-struct SystemCodexProcessRunnerTests {
+struct SystemCLIProcessRunnerTests {
   @Test
   func passesStandardInputAndCapturesOutput() async throws {
-    let output = try await SystemCodexProcessRunner().run(
+    let output = try await SystemCLIProcessRunner().run(
       invocation(executable: "/bin/cat", arguments: ["-"], stdin: "会议原文\n", timeout: .seconds(10))
     )
 
@@ -16,7 +16,7 @@ struct SystemCodexProcessRunnerTests {
 
   @Test
   func reportsNonZeroExitAndStandardError() async throws {
-    let output = try await SystemCodexProcessRunner().run(
+    let output = try await SystemCLIProcessRunner().run(
       invocation(executable: "/bin/cat", arguments: ["/nonexistent-wallebrain-file"], timeout: .seconds(10))
     )
 
@@ -27,8 +27,8 @@ struct SystemCodexProcessRunnerTests {
   @Test
   func terminatesProcessOnTimeout() async {
     let started = ContinuousClock.now
-    await #expect(throws: CodexCLIError.timedOut(seconds: 0)) {
-      try await SystemCodexProcessRunner().run(
+    await #expect(throws: LocalCLIError.timedOut(seconds: 0)) {
+      try await SystemCLIProcessRunner().run(
         invocation(executable: "/bin/sleep", arguments: ["30"], timeout: .milliseconds(300))
       )
     }
@@ -38,7 +38,7 @@ struct SystemCodexProcessRunnerTests {
   @Test
   func terminatesProcessOnCancellation() async {
     let task = Task {
-      try await SystemCodexProcessRunner().run(
+      try await SystemCLIProcessRunner().run(
         invocation(executable: "/bin/sleep", arguments: ["30"], timeout: .seconds(60))
       )
     }
@@ -58,8 +58,8 @@ struct SystemCodexProcessRunnerTests {
     arguments: [String],
     stdin: String? = nil,
     timeout: Duration
-  ) -> CodexProcessInvocation {
-    CodexProcessInvocation(
+  ) -> CLIProcessInvocation {
+    CLIProcessInvocation(
       executableURL: URL(fileURLWithPath: executable),
       arguments: arguments,
       environment: ["PATH": "/usr/bin:/bin"],

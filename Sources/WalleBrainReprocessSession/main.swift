@@ -6,15 +6,15 @@ struct WalleBrainReprocessSession {
   static func main() async throws {
     let arguments = CommandLine.arguments
     let organizeOnly = arguments.contains("--organize-only")
-    let backendArgument = arguments.first { $0.hasPrefix("--backend=") }?.dropFirst("--backend=".count)
-    let backend = backendArgument.flatMap { PostProcessingBackend(rawValue: String($0)) }
+    let tiersArgument = arguments.first { $0.hasPrefix("--tiers=") }?.dropFirst("--tiers=".count)
+    let tiers = tiersArgument.map { $0.split(separator: ",").map { PostProcessingTier(argument: String($0)) } }
     let positionalArguments = arguments.dropFirst().filter { !$0.hasPrefix("--") }
-    guard let sessionPath = positionalArguments.first, backendArgument == nil || backend != nil else {
-      fputs("Usage: swift run WalleBrainReprocessSession [--organize-only] [--backend=codex|api] <session-json-path>\n", stderr)
+    guard let sessionPath = positionalArguments.first, tiers?.contains(nil) != true else {
+      fputs("Usage: swift run WalleBrainReprocessSession [--organize-only] [--tiers=codex,claude,api] <session-json-path>\n", stderr)
       Foundation.exit(2)
     }
     let client = try MeetingPostProcessingClientFactory.makeClient(
-      backend: backend,
+      tiers: tiers?.compactMap { $0 },
       log: PostProcessingLog.unifiedLogAndStandardError
     )
 

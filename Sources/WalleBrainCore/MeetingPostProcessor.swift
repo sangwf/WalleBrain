@@ -57,7 +57,18 @@ public actor MeetingPostProcessor {
       )
     }
 
-    let postProcessingClient = try client ?? MeetingPostProcessingClientFactory.makeClient()
+    let postProcessingClient: any MeetingPostProcessingClient
+    do {
+      postProcessingClient = try client ?? MeetingPostProcessingClientFactory.makeClient()
+    } catch {
+      return try await persist(
+        result: fallbackResult(for: effectiveTranscript, error: error),
+        status: .failed,
+        errorMessage: error.localizedDescription,
+        effectiveTranscript: effectiveTranscript,
+        session: session
+      )
+    }
     let organizedResult: OrganizedTranscriptResult
     if
       reuseExistingOrganizedTranscript,

@@ -43,10 +43,17 @@ struct CodexCLIPostProcessingClientTests {
 
   @Test
   func processEnvironmentPutsBinaryDirectoryAndInstallLocationsOnPATH() {
-    let environment = CodexCLIPostProcessingClient.makeProcessEnvironment(
+    let resolver = CLIExecutableResolver(
+      tool: .codex,
+      configuredPath: nil,
+      environmentPATH: nil,
+      homeDirectory: "/Users/test",
+      fileSystem: FakeFileSystem().fileSystem
+    )
+    let environment = LocalCLISupport.makeProcessEnvironment(
       base: ["PATH": "/usr/bin:/bin", "HOME": "/Users/test"],
       executablePath: "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js",
-      homeDirectory: "/Users/test"
+      searchDirectories: resolver.fallbackSearchDirectories
     )
 
     let path = environment["PATH"]?.split(separator: ":").map(String.init) ?? []
@@ -126,7 +133,7 @@ struct CodexCLIPostProcessingClientTests {
   @Test
   func analysisOutputSchemaIsStrictEverywhere() throws {
     let schema = try #require(
-      try JSONSerialization.jsonObject(with: Data(CodexCLIPostProcessingClient.analysisOutputSchema.utf8)) as? [String: Any]
+      try JSONSerialization.jsonObject(with: Data(LocalCLISupport.analysisOutputSchema.utf8)) as? [String: Any]
     )
     let topLevel = try #require(schema["properties"] as? [String: Any])
     #expect(Set(topLevel.keys) == [
@@ -140,7 +147,7 @@ struct CodexCLIPostProcessingClientTests {
 
   @Test
   func searchLocationsFollowConfiguredThenPATHThenFallbackDirectories() {
-    let resolver = CodexExecutableResolver(
+    let resolver = CLIExecutableResolver(
       configuredPath: "~/tools/codex",
       environmentPATH: "/usr/bin:/opt/homebrew/bin:/custom/bin",
       homeDirectory: "/Users/test",
@@ -160,7 +167,7 @@ struct CodexCLIPostProcessingClientTests {
   @Test
   func configuredDirectoryResolvesToCodexInside() {
     let fake = FakeFileSystem(directories: ["/Applications/Tools"])
-    let resolver = CodexExecutableResolver(
+    let resolver = CLIExecutableResolver(
       configuredPath: "/Applications/Tools",
       environmentPATH: nil,
       homeDirectory: "/Users/test",
@@ -173,13 +180,13 @@ struct CodexCLIPostProcessingClientTests {
   @Test
   func npmWrapperExpandsToNativeBinariesFirst() {
     let wrapper = "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js"
-    let native = CodexExecutableResolver.nativeBinaryCandidates(forWrapperAt: wrapper)
+    let native = CLIExecutableResolver.nativeBinaryCandidates(forWrapperAt: wrapper)
       .first { $0.hasSuffix("/bin/codex") && $0.contains("node_modules/@openai/codex/node_modules") }!
     let fake = FakeFileSystem(
       executables: ["/opt/homebrew/bin/codex", native, "/Users/test/.local/bin/codex"],
       symlinks: ["/opt/homebrew/bin/codex": wrapper]
     )
-    let resolver = CodexExecutableResolver(
+    let resolver = CLIExecutableResolver(
       configuredPath: nil,
       environmentPATH: "/usr/bin",
       homeDirectory: "/Users/test",
@@ -192,40 +199,40 @@ struct CodexCLIPostProcessingClientTests {
   @Test
   func resolveExecutableSkipsBrokenCandidatesUsingVersionCheck() async throws {
     let fake = FakeFileSystem(executables: ["/usr/local/bin/codex", "/Users/test/.local/bin/codex"])
-    let runner = FakeCodexRunner { invocation in
+    let runner = FakeCLIRunner { invocation in
       #expect(invocation.arguments == ["--version"])
       if invocation.executableURL.path == "/usr/local/bin/codex" {
-        return CodexProcessOutput(exitCode: 1, standardOutput: "", standardError: "Error: spawn codex ENOENT")
+        return CLIProcessOutput(exitCode: 1, standardOutput: "", standardError: "Error: spawn codex ENOENT")
       }
-      return CodexProcessOutput(exitCode: 0, standardOutput: "codex-cli 9.9.9\n", standardError: "")
+      return CLIProcessOutput(exitCode: 0, standardOutput: "codex-cli 9.9.9\n", standardError: "")
     }
     let client = makeClient(fileSystem: fake, runner: runner)
 
     let executable = try await client.resolveExecutable()
 
-    #expect(executable == CodexExecutable(path: "/Users/test/.local/bin/codex", version: "codex-cli 9.9.9"))
+    #expect(executable == LocalCLIExecutable(path: "/Users/test/.local/bin/codex", version: "codex-cli 9.9.9"))
     _ = try await client.resolveExecutable()
     #expect(await runner.invocations.count == 2)
   }
 
   @Test
   func resolveExecutableReportsMissingAndUnusableBinaries() async {
-    let missing = makeClient(fileSystem: FakeFileSystem(), runner: FakeCodexRunner { _ in
+    let missing = makeClient(fileSystem: FakeFileSystem(), runner: FakeCLIRunner { _ in
       Issue.record("Runner must not be called without candidates.")
-      return CodexProcessOutput(exitCode: 0, standardOutput: "", standardError: "")
+      return CLIProcessOutput(exitCode: 0, standardOutput: "", standardError: "")
     })
-    await #expect(throws: CodexCLIError.self) {
+    await #expect(throws: LocalCLIError.self) {
       try await missing.resolveExecutable()
     }
 
     let broken = makeClient(
       fileSystem: FakeFileSystem(executables: ["/opt/homebrew/bin/codex"]),
-      runner: FakeCodexRunner { _ in CodexProcessOutput(exitCode: 1, standardOutput: "", standardError: "ENOENT") }
+      runner: FakeCLIRunner { _ in CLIProcessOutput(exitCode: 1, standardOutput: "", standardError: "ENOENT") }
     )
     do {
       _ = try await broken.resolveExecutable()
       Issue.record("Expected an unusable-binary error.")
-    } catch let error as CodexCLIError {
+    } catch let error as LocalCLIError {
       #expect(error.isUnavailable)
     } catch {
       Issue.record("Unexpected error \(error)")
@@ -237,9 +244,9 @@ struct CodexCLIPostProcessingClientTests {
   @Test
   func organizeRunsCodexInIsolatedWorkspaceAndRecordsModel() async throws {
     let fixture = Self.transcriptFixture()
-    let runner = FakeCodexRunner { invocation in
+    let runner = FakeCLIRunner { invocation in
       if invocation.arguments == ["--version"] {
-        return CodexProcessOutput(exitCode: 0, standardOutput: "codex-cli 1.0.0", standardError: "")
+        return CLIProcessOutput(exitCode: 0, standardOutput: "codex-cli 1.0.0", standardError: "")
       }
 
       let workspace = URL(fileURLWithPath: try #require(value(after: "--cd", in: invocation.arguments)))
@@ -251,7 +258,7 @@ struct CodexCLIPostProcessingClientTests {
 
       let outputFile = try #require(value(after: "--output-last-message", in: invocation.arguments))
       try fixture.organized.write(toFile: outputFile, atomically: true, encoding: .utf8)
-      return CodexProcessOutput(
+      return CLIProcessOutput(
         exitCode: 0,
         standardOutput: "",
         standardError: "--------\nmodel: gpt-6-astra\nprovider: openai\n--------\nuser\n..."
@@ -277,24 +284,24 @@ struct CodexCLIPostProcessingClientTests {
     let fixture = Self.transcriptFixture()
     let failing = makeClient(
       fileSystem: FakeFileSystem(executables: ["/opt/homebrew/bin/codex"]),
-      runner: FakeCodexRunner { invocation in
+      runner: FakeCLIRunner { invocation in
         if invocation.arguments == ["--version"] {
-          return CodexProcessOutput(exitCode: 0, standardOutput: "codex-cli 1.0.0", standardError: "")
+          return CLIProcessOutput(exitCode: 0, standardOutput: "codex-cli 1.0.0", standardError: "")
         }
-        return CodexProcessOutput(exitCode: 1, standardOutput: "", standardError: "ERROR: 401 Unauthorized")
+        return CLIProcessOutput(exitCode: 1, standardOutput: "", standardError: "ERROR: stream disconnected")
       }
     )
-    await #expect(throws: CodexCLIError.processFailed(exitCode: 1, details: "ERROR: 401 Unauthorized")) {
+    await #expect(throws: LocalCLIError.processFailed(tool: "Codex CLI", exitCode: 1, details: "ERROR: stream disconnected")) {
       try await failing.organizeTranscript(transcript: fixture.source, dictionary: TermDictionary(title: "T", entries: []))
     }
 
     let truncated = makeClient(
       fileSystem: FakeFileSystem(executables: ["/opt/homebrew/bin/codex"]),
-      runner: FakeCodexRunner { invocation in
+      runner: FakeCLIRunner { invocation in
         if invocation.arguments == ["--version"] {
-          return CodexProcessOutput(exitCode: 0, standardOutput: "codex-cli 1.0.0", standardError: "")
+          return CLIProcessOutput(exitCode: 0, standardOutput: "codex-cli 1.0.0", standardError: "")
         }
-        return CodexProcessOutput(exitCode: 0, standardOutput: "A：太短了。", standardError: "")
+        return CLIProcessOutput(exitCode: 0, standardOutput: "A：太短了。", standardError: "")
       }
     )
     await #expect(throws: WalleBrainError.self) {
@@ -302,14 +309,42 @@ struct CodexCLIPostProcessingClientTests {
     }
   }
 
+  @Test
+  func unauthorizedRunMarksCodexUnavailable() async {
+    let fixture = Self.transcriptFixture()
+    let client = makeClient(
+      fileSystem: FakeFileSystem(executables: ["/opt/homebrew/bin/codex"]),
+      runner: FakeCLIRunner { invocation in
+        if invocation.arguments == ["--version"] {
+          return CLIProcessOutput(exitCode: 0, standardOutput: "codex-cli 1.0.0", standardError: "")
+        }
+        return CLIProcessOutput(
+          exitCode: 1,
+          standardOutput: "",
+          standardError: "ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"
+        )
+      }
+    )
+
+    do {
+      _ = try await client.organizeTranscript(transcript: fixture.source, dictionary: TermDictionary(title: "T", entries: []))
+      Issue.record("Expected a not-authenticated error.")
+    } catch let error as LocalCLIError {
+      #expect(error.isUnavailable)
+      #expect(error.localizedDescription.contains("codex login"))
+    } catch {
+      Issue.record("Unexpected error \(error)")
+    }
+  }
+
   // MARK: - Helpers
 
-  private func makeClient(fileSystem: FakeFileSystem, runner: FakeCodexRunner) -> CodexCLIPostProcessingClient {
+  private func makeClient(fileSystem: FakeFileSystem, runner: FakeCLIRunner) -> CodexCLIPostProcessingClient {
     CodexCLIPostProcessingClient(
-      options: CodexCLIOptions(),
+      options: LocalCLIOptions(),
       environment: ["PATH": "/usr/bin", "HOME": "/Users/test"],
       runner: runner,
-      resolver: CodexExecutableResolver(
+      resolver: CLIExecutableResolver(
         configuredPath: nil,
         environmentPATH: "/usr/bin",
         homeDirectory: "/Users/test",
@@ -362,11 +397,11 @@ struct FakeFileSystem: Sendable {
   var directories: Set<String> = []
   var symlinks: [String: String] = [:]
 
-  var fileSystem: CodexFileSystem {
+  var fileSystem: CLIFileSystem {
     let executables = executables
     let directories = directories
     let symlinks = symlinks
-    return CodexFileSystem(
+    return CLIFileSystem(
       isExecutableFile: { executables.contains($0) },
       isDirectory: { directories.contains($0) },
       resolvingSymlinks: { symlinks[$0] ?? $0 }
@@ -374,15 +409,15 @@ struct FakeFileSystem: Sendable {
   }
 }
 
-actor FakeCodexRunner: CodexProcessRunning {
-  private let handler: @Sendable (CodexProcessInvocation) throws -> CodexProcessOutput
-  private(set) var invocations: [CodexProcessInvocation] = []
+actor FakeCLIRunner: CLIProcessRunning {
+  private let handler: @Sendable (CLIProcessInvocation) throws -> CLIProcessOutput
+  private(set) var invocations: [CLIProcessInvocation] = []
 
-  init(handler: @escaping @Sendable (CodexProcessInvocation) throws -> CodexProcessOutput) {
+  init(handler: @escaping @Sendable (CLIProcessInvocation) throws -> CLIProcessOutput) {
     self.handler = handler
   }
 
-  func run(_ invocation: CodexProcessInvocation) async throws -> CodexProcessOutput {
+  func run(_ invocation: CLIProcessInvocation) async throws -> CLIProcessOutput {
     invocations.append(invocation)
     return try handler(invocation)
   }
