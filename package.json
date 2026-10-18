@@ -11,6 +11,7 @@
     "native:build": "swift build",
     "native:app": "swift run WalleBrainApp",
     "native:bundle": "./scripts/build_native_bundle.sh WalleBrainApp WalleBrain com.wallebrain.app",
+    "native:install": "./scripts/install_native_app.sh",
     "native:bundle-smoke": "./scripts/build_native_bundle.sh WalleBrainRealMeetingSmoke WalleBrainSmoke com.wallebrain.smoke",
     "native:open": "./scripts/build_native_bundle.sh WalleBrainApp WalleBrain com.wallebrain.app >/tmp/wallebrain_bundle_path && open \"$(cat /tmp/wallebrain_bundle_path)\"",
     "native:acceptance": "swift run WalleBrainAcceptance",

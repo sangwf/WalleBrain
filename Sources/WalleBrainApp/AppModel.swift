@@ -85,7 +85,10 @@ final class AppModel: ObservableObject {
     }
   }
 
-  private let paths = RuntimePaths()
+  let dataDirectory: ResolvedDataDirectory
+  @Published var pendingDataDirectoryPath: String?
+  @Published var dataDirectoryStatusMessage = ""
+  private let paths: RuntimePaths
   private static let transcriptionQualityModeDefaultsKey = "WalleBrain.TranscriptionQualityMode"
   private static let transcriptionLanguageModeDefaultsKey = "WalleBrain.TranscriptionLanguageMode"
   private var liveCoordinator: LiveMeetingCoordinator
@@ -97,6 +100,9 @@ final class AppModel: ObservableObject {
   private var manualTranscriptSaveVersion = 0
 
   init() {
+    let dataDirectory = DataDirectorySettingsStore().resolveAndRecordDefault(using: .live())
+    self.dataDirectory = dataDirectory
+    paths = RuntimePaths(baseDirectory: dataDirectory.url)
     meetingTitle = Self.defaultMeetingTitle()
     transcriptionQualityMode = TranscriptionQualityMode(
       rawValue: UserDefaults.standard.string(forKey: Self.transcriptionQualityModeDefaultsKey) ?? ""
@@ -152,6 +158,9 @@ final class AppModel: ObservableObject {
     refreshAudioInputs()
     await recoverInterruptedSessions()
     await loadRecentSessions()
+    appendAppDebugLog(
+      "launch bundle=\(Bundle.main.bundleURL.path(percentEncoded: false)) dataDirectory=\(dataDirectoryPath) source=\(dataDirectory.source.rawValue) sessions=\(recentSessions.count)"
+    )
     if currentSession == nil {
       prepareNewMeetingDraft()
     } else if currentSession?.status != .recording {
@@ -1085,6 +1094,71 @@ final class AppModel: ObservableObject {
     }
 
     NSWorkspace.shared.open(url)
+  }
+
+  var dataDirectoryPath: String {
+    Self.displayPath(dataDirectory.url)
+  }
+
+  var meetingSessionsDirectoryPath: String {
+    Self.displayPath(paths.nativeMeetingSessionsDirectory)
+  }
+
+  var dataDirectorySourceDescription: String {
+    switch dataDirectory.source {
+    case .environment:
+      "Set by WALLEBRAIN_BASE_DIR. Unset it to use the folder chosen here."
+    case .developmentCheckout:
+      "This build runs from a source checkout and always uses that checkout's runtime folder."
+    case .settings:
+      "Chosen in Settings."
+    case .bundledDefault:
+      "Default: the repository runtime folder that existed when this app was installed."
+    case .applicationSupport:
+      "Default for a fresh install."
+    }
+  }
+
+  func chooseDataDirectory() {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.canCreateDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.prompt = "Use Folder"
+    panel.message = "Choose the folder that contains (or will contain) WalleBrain's runtime/ data. Existing data is not moved."
+    panel.directoryURL = dataDirectory.url
+    guard panel.runModal() == .OK, let url = panel.url else {
+      return
+    }
+
+    let store = DataDirectorySettingsStore()
+    store.save(url)
+    let chosenPath = Self.displayPath(url)
+    if chosenPath == dataDirectoryPath {
+      pendingDataDirectoryPath = nil
+      dataDirectoryStatusMessage = ""
+      return
+    }
+
+    pendingDataDirectoryPath = chosenPath
+    let chosenPaths = RuntimePaths(baseDirectory: url)
+    let hasExistingData = FileManager.default.fileExists(
+      atPath: chosenPaths.nativeMeetingSessionsDirectory.path(percentEncoded: false)
+    )
+    dataDirectoryStatusMessage = (hasExistingData
+      ? "Found existing WalleBrain data there."
+      : "No WalleBrain data there yet; an empty library will be created.")
+      + " Quit and reopen WalleBrain to switch. Nothing is moved or copied."
+  }
+
+  func revealDataDirectory() {
+    NSWorkspace.shared.activateFileViewerSelecting([paths.runtimeDirectory])
+  }
+
+  private static func displayPath(_ url: URL) -> String {
+    let path = url.standardizedFileURL.path(percentEncoded: false)
+    return path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
   }
 
   private func handleMeetingStartError(_ error: Error) {

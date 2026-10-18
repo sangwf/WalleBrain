@@ -2,8 +2,17 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RUNTIME_DIR="$ROOT_DIR/runtime"
-KEYCHAIN_PATH="$RUNTIME_DIR/wallebrain-signing.keychain-db"
+# Keep one signing identity for the main checkout and all of its worktrees: macOS privacy
+# grants (microphone, speech, screen recording) are tied to the certificate, so a fresh
+# identity per worktree would make every build ask for permissions again.
+GIT_COMMON_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [[ -n "$GIT_COMMON_DIR" && -d "$(dirname "$GIT_COMMON_DIR")/runtime" ]]; then
+  MAIN_ROOT_DIR="$(dirname "$GIT_COMMON_DIR")"
+else
+  MAIN_ROOT_DIR="$ROOT_DIR"
+fi
+RUNTIME_DIR="$MAIN_ROOT_DIR/runtime"
+KEYCHAIN_PATH="${WALLEBRAIN_SIGNING_KEYCHAIN:-$RUNTIME_DIR/wallebrain-signing.keychain-db}"
 KEYCHAIN_PASSWORD="${WALLEBRAIN_KEYCHAIN_PASSWORD:-wallebrain-local-signing}"
 IDENTITY_NAME="${WALLEBRAIN_CODESIGN_IDENTITY:-WalleBrain Local Signing}"
 

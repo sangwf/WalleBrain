@@ -1261,6 +1261,8 @@ private struct SettingsSheetView: View {
           .font(.subheadline)
           .foregroundStyle(.secondary)
 
+        dataDirectoryGroup
+
         postProcessingBackendGroup
 
         GroupBox {
@@ -1380,6 +1382,54 @@ private struct SettingsSheetView: View {
       .frame(maxWidth: .infinity, alignment: .topLeading)
     }
     .frame(minWidth: 680, minHeight: 650, alignment: .topLeading)
+  }
+
+  private var dataDirectoryGroup: some View {
+    GroupBox {
+      VStack(alignment: .leading, spacing: 10) {
+        Text(model.dataDirectoryPath)
+          .font(.callout.monospaced())
+          .textSelection(.enabled)
+
+        Text(model.dataDirectorySourceDescription)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+
+        Text("Meetings: \(model.meetingSessionsDirectoryPath)")
+          .font(.caption.monospaced())
+          .foregroundStyle(.secondary)
+          .textSelection(.enabled)
+
+        HStack(spacing: 12) {
+          Button("Choose…") {
+            model.chooseDataDirectory()
+          }
+          .buttonStyle(.bordered)
+          .disabled(!model.dataDirectory.source.honorsSettings)
+
+          Button("Show in Finder") {
+            model.revealDataDirectory()
+          }
+          .buttonStyle(.bordered)
+        }
+
+        if let pending = model.pendingDataDirectoryPath {
+          Text("Next launch: \(pending)")
+            .font(.caption.monospaced())
+        }
+
+        if !model.dataDirectoryStatusMessage.isEmpty {
+          Text(model.dataDirectoryStatusMessage)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
+      .padding(8)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } label: {
+      Text("Data Directory")
+        .font(.headline)
+    }
   }
 
   @ViewBuilder
