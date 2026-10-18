@@ -1102,6 +1102,9 @@ private struct SessionInspector: View {
 
         inspectorCard("Artifacts") {
           inspectorLine("Audio", model.currentSession?.audioFilePath ?? "Pending")
+          if let systemAudioFilePath = model.currentSession?.systemAudioFilePath {
+            inspectorLine("System Audio", systemAudioFilePath)
+          }
           inspectorLine("Note", model.currentSession?.exportedNotePath ?? "Pending")
           inspectorLine("Dictionary", model.currentSession?.dictionaryPath ?? "Pending")
         }

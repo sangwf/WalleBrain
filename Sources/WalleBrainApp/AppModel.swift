@@ -1378,6 +1378,7 @@ final class AppModel: ObservableObject {
         relatedPeople: session.relatedPeople ?? [],
         dictionaryPath: session.dictionaryPath,
         audioFilePath: session.audioFilePath,
+        systemAudioFilePath: session.systemAudioFilePath,
         provider: session.provider ?? "local",
         model: session.model ?? "manual-revision"
       )

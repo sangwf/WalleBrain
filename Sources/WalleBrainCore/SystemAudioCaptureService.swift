@@ -7,6 +7,7 @@ import Speech
 
 public final class SystemAudioCaptureService: NSObject, @unchecked Sendable {
   private let callbackQueue = DispatchQueue(label: "com.wallebrain.capture.system-audio")
+  private static let callbackQueueKey = DispatchSpecificKey<Void>()
   private let debugRawSystemAudioErrors = ProcessInfo.processInfo.environment["WALLEBRAIN_DEBUG_SYSTEM_AUDIO_ERRORS"] == "1"
 
   private var continuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -19,6 +20,13 @@ public final class SystemAudioCaptureService: NSObject, @unchecked Sendable {
   private var stream: SCStream?
   private var stopContinuation: CheckedContinuation<Void, Error>?
   private var nextBufferStartTime: CMTime?
+  /// Only touched on `callbackQueue`.
+  private var fileWriter: AudioBufferFileWriter?
+
+  public override init() {
+    super.init()
+    callbackQueue.setSpecific(key: Self.callbackQueueKey, value: ())
+  }
 
   public func start(
     device: AudioInputDevice,
@@ -42,6 +50,7 @@ public final class SystemAudioCaptureService: NSObject, @unchecked Sendable {
       if FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false)) {
         try FileManager.default.removeItem(at: outputURL)
       }
+      openFileWriter(at: outputURL)
 
       let shareableContent: SCShareableContent
       do {
@@ -87,13 +96,17 @@ public final class SystemAudioCaptureService: NSObject, @unchecked Sendable {
         stream: stream
       )
     } catch {
+      closeFileWriter()
       continuation?.finish()
       continuation = nil
       throw error
     }
   }
 
+  /// Flushes the recording even when stopping the stream fails, so captured audio is never lost.
   public func stop() async throws {
+    defer { closeFileWriter() }
+
     guard let stream else {
       continuation?.finish()
       continuation = nil
@@ -166,10 +179,13 @@ extension SystemAudioCaptureService: SCStreamOutput {
       return
     }
 
-    guard
-      let pcmBuffer = AudioSampleBufferConverter.makePCMBuffer(from: sampleBuffer, targetFormat: configuredFormat),
-      let continuation
-    else {
+    guard let pcmBuffer = AudioSampleBufferConverter.makePCMBuffer(from: sampleBuffer, targetFormat: configuredFormat) else {
+      return
+    }
+
+    fileWriter?.write(pcmBuffer)
+
+    guard let continuation else {
       return
     }
 
@@ -180,6 +196,7 @@ extension SystemAudioCaptureService: SCStreamOutput {
 
 extension SystemAudioCaptureService: SCStreamDelegate {
   public func stream(_ stream: SCStream, didStopWithError error: Error) {
+    closeFileWriter()
     if let stopContinuation {
       stopContinuation.resume(throwing: error)
       self.stopContinuation = nil
@@ -192,6 +209,33 @@ extension SystemAudioCaptureService: SCStreamDelegate {
 }
 
 extension SystemAudioCaptureService {
+  /// A recording that cannot be opened is skipped rather than failing capture: in mixed mode the
+  /// microphone recording and the live transcript must keep going regardless.
+  private func openFileWriter(at url: URL) {
+    let writer: AudioBufferFileWriter?
+    do {
+      writer = try AudioBufferFileWriter(url: url, format: configuredFormat)
+    } catch {
+      writer = nil
+    }
+    callbackQueue.sync {
+      fileWriter?.close()
+      fileWriter = writer
+    }
+  }
+
+  private func closeFileWriter() {
+    let close = {
+      self.fileWriter?.close()
+      self.fileWriter = nil
+    }
+    if DispatchQueue.getSpecific(key: Self.callbackQueueKey) != nil {
+      close()
+    } else {
+      callbackQueue.sync(execute: close)
+    }
+  }
+
   private func nextMonotonicTimestamp(for buffer: AVAudioPCMBuffer) -> CMTime {
     let start = nextBufferStartTime ?? .zero
     let duration = CMTime(

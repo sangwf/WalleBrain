@@ -25,7 +25,7 @@ public actor NoteExporter {
     provider: \(note.provider)
     model: \(note.model)
     dictionary_file: \(note.dictionaryPath)
-    audio_file: \(note.audioFilePath)
+    audio_file: \(note.audioFilePath)\(note.systemAudioFilePath.map { "\nsystem_audio_file: \($0)" } ?? "")
     ---
 
     # \(note.title)

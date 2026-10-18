@@ -172,6 +172,7 @@ public actor MeetingPostProcessor {
         relatedPeople: result.relatedPeople,
         dictionaryPath: session.dictionaryPath,
         audioFilePath: session.audioFilePath,
+        systemAudioFilePath: session.systemAudioFilePath,
         provider: result.provider,
         model: result.model
       )

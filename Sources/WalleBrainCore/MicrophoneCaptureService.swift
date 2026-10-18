@@ -8,6 +8,8 @@ public struct StartedCapture {
   public let audioFileURL: URL
   public let audioFormat: AVAudioFormat
   public let stream: AsyncStream<AnalyzerInput>
+  /// Mixed mode only: the separately kept system audio recording.
+  public var systemAudioFileURL: URL? = nil
 }
 
 public final class MicrophoneCaptureService: NSObject, @unchecked Sendable {

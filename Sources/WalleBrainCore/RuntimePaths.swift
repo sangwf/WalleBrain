@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 public struct RuntimePaths: Sendable {
@@ -247,5 +248,33 @@ public struct DataDirectorySettingsStore {
       save(resolved.url)
     }
     return resolved
+  }
+}
+
+/// Files that sit next to a meeting's primary audio recording (`<stem>.caf`).
+public enum MeetingAudioFiles {
+  /// Microphone capture in mixed mode; copied to the primary path when recording stops.
+  public static func microphoneCaptureURL(forPrimary primary: URL) -> URL {
+    siblingURL(forPrimary: primary, suffix: "mic")
+  }
+
+  /// System audio kept beside the microphone recording in mixed mode. Never deleted by capture.
+  public static func systemAudioURL(forPrimary primary: URL) -> URL {
+    siblingURL(forPrimary: primary, suffix: "system")
+  }
+
+  /// Whether the file exists and decodes to at least one audio frame. An AAC file that never
+  /// received a buffer still has a header, so file size alone is not enough.
+  public static func containsAudio(at url: URL) -> Bool {
+    guard let file = try? AVAudioFile(forReading: url) else {
+      return false
+    }
+    return file.length > 0
+  }
+
+  private static func siblingURL(forPrimary primary: URL, suffix: String) -> URL {
+    let base = primary.deletingPathExtension()
+    return base.deletingLastPathComponent()
+      .appending(path: "\(base.lastPathComponent).\(suffix).caf", directoryHint: .notDirectory)
   }
 }

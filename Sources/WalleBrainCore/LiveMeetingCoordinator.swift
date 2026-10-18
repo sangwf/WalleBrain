@@ -188,7 +188,8 @@ public actor LiveMeetingCoordinator {
           outputURL: URL(fileURLWithPath: session.audioFilePath),
           targetFormat: analyzerFormat
         )
-        await trace("mixed capture started")
+        session.systemAudioFilePath = capture.systemAudioFileURL?.path(percentEncoded: false)
+        await trace("mixed capture started systemAudio=\(session.systemAudioFilePath ?? "nil")")
       } else if AudioInputCatalog.isSystemAudioInput(id: selectedInput.id) {
         capture = try await systemAudioRecorder.start(
           device: selectedInput,
@@ -291,6 +292,7 @@ public actor LiveMeetingCoordinator {
         await trace("stopMeeting capture stop done session=\(processingSessionID.uuidString)")
         try await ensurePrimaryAudioArtifactExists(for: session)
         await trace("stopMeeting primary audio ready session=\(processingSessionID.uuidString)")
+        await dropMissingSystemAudioFile()
         if let realtimeResultsTask {
           await waitForRealtimeResultsDuringStop(realtimeResultsTask)
           self.realtimeResultsTask = nil
@@ -969,13 +971,27 @@ public actor LiveMeetingCoordinator {
   }
 
   private func siblingAudioCandidates(for outputURL: URL) -> [URL] {
-    let base = outputURL.deletingPathExtension()
-    return [
-      base.deletingLastPathComponent()
-        .appending(path: "\(base.lastPathComponent).mic.caf", directoryHint: .notDirectory),
-      base.deletingLastPathComponent()
-        .appending(path: "\(base.lastPathComponent).system.caf", directoryHint: .notDirectory),
+    [
+      MeetingAudioFiles.microphoneCaptureURL(forPrimary: outputURL),
+      MeetingAudioFiles.systemAudioURL(forPrimary: outputURL),
     ]
+  }
+
+  /// Keeps `systemAudioFilePath` only when the system recording actually holds audio, so the
+  /// session never points at a file that is missing (e.g. Screen Recording access was denied).
+  private func dropMissingSystemAudioFile() async {
+    guard var session = currentSession, let path = session.systemAudioFilePath else {
+      return
+    }
+
+    let containsAudio = MeetingAudioFiles.containsAudio(at: URL(fileURLWithPath: path))
+    await trace("stopMeeting system audio path=\(path) containsAudio=\(containsAudio)")
+    guard !containsAudio else {
+      return
+    }
+
+    session.systemAudioFilePath = nil
+    currentSession = session
   }
 
   private func bestAvailableAudioSource(from candidates: [URL], fileManager: FileManager) throws -> URL? {

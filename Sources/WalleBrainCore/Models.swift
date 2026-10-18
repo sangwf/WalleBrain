@@ -575,6 +575,9 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
   public var selectedInput: AudioInputDevice?
   public var dictionaryPath: String
   public var audioFilePath: String
+  /// Mixed mode: system audio recorded beside the microphone file. Nil for older sessions,
+  /// other inputs, or when no system audio was captured.
+  public var systemAudioFilePath: String?
   public var sessionJSONPath: String
   public var sessionMarkdownPath: String
   public var exportedNotePath: String?
@@ -613,6 +616,7 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
     selectedInput: AudioInputDevice? = nil,
     dictionaryPath: String,
     audioFilePath: String,
+    systemAudioFilePath: String? = nil,
     sessionJSONPath: String,
     sessionMarkdownPath: String,
     exportedNotePath: String? = nil,
@@ -650,6 +654,7 @@ public struct NativeMeetingSession: Codable, Sendable, Hashable, Identifiable {
     self.selectedInput = selectedInput
     self.dictionaryPath = dictionaryPath
     self.audioFilePath = audioFilePath
+    self.systemAudioFilePath = systemAudioFilePath
     self.sessionJSONPath = sessionJSONPath
     self.sessionMarkdownPath = sessionMarkdownPath
     self.exportedNotePath = exportedNotePath
@@ -698,6 +703,7 @@ public struct NativeMeetingNote: Sendable, Hashable {
   public let relatedPeople: [PersonReference]
   public let dictionaryPath: String
   public let audioFilePath: String
+  public let systemAudioFilePath: String?
   public let provider: String
   public let model: String
 
@@ -719,6 +725,7 @@ public struct NativeMeetingNote: Sendable, Hashable {
     relatedPeople: [PersonReference] = [],
     dictionaryPath: String,
     audioFilePath: String,
+    systemAudioFilePath: String? = nil,
     provider: String,
     model: String
   ) {
@@ -739,6 +746,7 @@ public struct NativeMeetingNote: Sendable, Hashable {
     self.relatedPeople = relatedPeople
     self.dictionaryPath = dictionaryPath
     self.audioFilePath = audioFilePath
+    self.systemAudioFilePath = systemAudioFilePath
     self.provider = provider
     self.model = model
   }

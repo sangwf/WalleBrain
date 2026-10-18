@@ -116,6 +116,7 @@ struct WalleBrainReprocessSession {
         relatedPeople: session.relatedPeople ?? [],
         dictionaryPath: session.dictionaryPath,
         audioFilePath: session.audioFilePath,
+        systemAudioFilePath: session.systemAudioFilePath,
         provider: result.provider,
         model: result.model
       )
